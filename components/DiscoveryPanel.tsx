@@ -6,20 +6,26 @@ import type {
   DiscoveryDecision,
   PanelItem,
 } from "@/types/discovery";
+import type { AgentVoice } from "@/lib/agentVoices";
+import type { AgentReasoning } from "@/lib/agentReasoning";
 
 export type PanelDirection = {
   id: string;
   title: string;
   category: string;
   decision: DiscoveryDecision;
+  kind?: "route" | "consequence";
 };
 
-const DIRECTION_EXAMPLES = [
-  "Make this more psychological than supernatural.",
-  "Connect this to the old lady character.",
-  "Make the temple secretly alive.",
-  "Turn this into a political conflict.",
-  "Make this branch darker and more tragic.",
+export type JourneyStep = {
+  id: string;
+  title: string;
+};
+
+const STEER_EXAMPLES = [
+  "The temple is underwater",
+  "Nobody can speak inside",
+  "The caretaker is blind",
 ];
 
 type DiscoveryPanelProps = {
@@ -27,11 +33,14 @@ type DiscoveryPanelProps = {
   decision: DiscoveryDecision;
   directions: PanelDirection[];
   activeTrail: string[];
+  journeySteps: JourneyStep[];
   onNavigateDirection: (id: string) => void;
   onAction: (action: DiscoveryAction) => void;
   onClose: () => void;
   creatorDirection: string | null;
   onSetDirection: (direction: string) => void;
+  agentVoice: AgentVoice | null;
+  agentReasoning: AgentReasoning | null;
 };
 
 export default function DiscoveryPanel({
@@ -39,11 +48,14 @@ export default function DiscoveryPanel({
   decision,
   directions,
   activeTrail,
+  journeySteps,
   onNavigateDirection,
   onAction,
   onClose,
   creatorDirection,
   onSetDirection,
+  agentVoice,
+  agentReasoning,
 }: DiscoveryPanelProps) {
   const [draftDirection, setDraftDirection] = useState("");
   const title =
@@ -90,7 +102,42 @@ export default function DiscoveryPanel({
       </div>
 
       {/* Body */}
-      <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
+      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
+        {/* Your Journey */}
+        {journeySteps.length > 0 && (
+          <section className="rounded-lg border border-violet-900/30 bg-violet-950/10 px-4 py-3">
+            <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-violet-400/80">
+              Your Journey
+            </h3>
+            <div className="flex flex-col items-start gap-0.5">
+              {journeySteps.map((step, i) => {
+                const isCurrent = i === journeySteps.length - 1;
+                return (
+                  <div key={step.id} className="flex flex-col items-start">
+                    {i > 0 && (
+                      <span className="my-0.5 ml-2 text-[10px] text-slate-600 select-none">
+                        ↓
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => !isCurrent && onNavigateDirection(step.id)}
+                      disabled={isCurrent}
+                      className={`text-left text-sm leading-snug transition ${
+                        isCurrent
+                          ? "cursor-default font-semibold text-violet-200"
+                          : "text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      {step.title}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         <section>
           <h3 className="mb-2 text-xs uppercase tracking-wider text-slate-500">
             Description
@@ -109,6 +156,63 @@ export default function DiscoveryPanel({
           </section>
         )}
 
+        {/* Agent Reasoning — why branches appeared */}
+        {agentReasoning && (
+          <section className="rounded-lg border border-slate-800/60 bg-slate-900/30 px-4 py-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              Agent Reasoning
+            </p>
+            <p
+              className={`mt-2 text-[10px] font-semibold uppercase tracking-wider ${agentReasoning.accentClass}`}
+            >
+              {agentReasoning.agentLabel}
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-slate-400">
+              {agentReasoning.becauseTitle}
+            </p>
+            <ul className="mt-2 space-y-1">
+              {agentReasoning.reasons.map((reason) => (
+                <li
+                  key={reason}
+                  className="flex items-start gap-2 text-xs text-slate-400"
+                >
+                  <span className="mt-0.5 text-slate-600">•</span>
+                  {reason}
+                </li>
+              ))}
+            </ul>
+            {agentReasoning.ledTo.length > 0 && (
+              <>
+                <p className="mt-3 text-[10px] uppercase tracking-wider text-slate-600">
+                  This led to:
+                </p>
+                <ul className="mt-1.5 space-y-0.5">
+                  {agentReasoning.ledTo.map((name) => (
+                    <li
+                      key={name}
+                      className="text-xs font-medium text-teal-300/80"
+                    >
+                      {name}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </section>
+        )}
+
+        {/* Agent voice — creative collaborator */}
+        {agentVoice && (
+          <section className="rounded-lg border border-slate-800/60 bg-slate-900/30 px-4 py-3">
+            <p className={`text-[10px] font-semibold uppercase tracking-wider ${agentVoice.accentClass}`}>
+              {agentVoice.agentLabel}
+            </p>
+            <p className="mt-2 text-sm italic leading-relaxed text-slate-400">
+              "{agentVoice.message}"
+            </p>
+          </section>
+        )}
+
         {/* Possible Directions — the trail forward */}
         {directions.length > 0 && (
           <section>
@@ -122,6 +226,7 @@ export default function DiscoveryPanel({
               {directions.map((dir) => {
                 const onTrail = activeTrail.includes(dir.id);
                 const dirAccepted = dir.decision === "accepted";
+                const isConsequence = dir.kind === "consequence";
                 return (
                   <li key={dir.id}>
                     <button
@@ -130,23 +235,25 @@ export default function DiscoveryPanel({
                       className={`w-full rounded-lg border px-3 py-2.5 text-left transition-all ${
                         dirAccepted
                           ? "border-emerald-700/40 bg-emerald-950/20 hover:border-emerald-500/50"
-                          : onTrail
-                            ? "border-violet-600/45 bg-violet-950/20 hover:border-violet-500/60"
-                            : "border-slate-800/60 bg-slate-900/20 hover:border-slate-600/60"
+                          : isConsequence
+                            ? "border-teal-800/40 bg-teal-950/15 hover:border-teal-600/50"
+                            : onTrail
+                              ? "border-violet-600/45 bg-violet-950/20 hover:border-violet-500/60"
+                              : "border-slate-800/60 bg-slate-900/20 hover:border-slate-600/60"
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <p
-                          className={`text-sm font-medium ${dirAccepted ? "text-emerald-200" : "text-slate-200"}`}
+                          className={`text-sm font-medium ${dirAccepted ? "text-emerald-200" : isConsequence ? "text-teal-200" : "text-slate-200"}`}
                         >
                           {dir.title}
                         </p>
                         <span className="shrink-0 text-[10px] text-slate-600">
-                          {dirAccepted ? "● canon" : "→"}
+                          {dirAccepted ? "● canon" : isConsequence ? "✦ emerged" : "→"}
                         </span>
                       </div>
                       <p className="mt-0.5 text-[11px] uppercase tracking-wider text-slate-600">
-                        {dir.category}
+                        {isConsequence ? "World Consequence" : dir.category}
                       </p>
                     </button>
                   </li>
@@ -156,20 +263,22 @@ export default function DiscoveryPanel({
           </section>
         )}
 
-        {/* Creator Direction */}
+        {/* Steer This Path */}
         <section className="rounded-lg border border-amber-900/30 bg-amber-950/10 p-4">
-          <div className="mb-3 flex items-center gap-2">
+          <div className="mb-1 flex items-center gap-2">
             <span className="text-[11px] text-amber-400/80">✦</span>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-amber-400/80">
-              Creator Direction
+              Steer This Path
             </h3>
           </div>
+          <p className="mb-3 text-[11px] text-slate-500">
+            What should happen next?
+          </p>
 
-          {/* Saved direction display */}
           {creatorDirection && (
             <div className="mb-3 rounded-md border border-amber-800/30 bg-amber-950/30 px-3 py-2">
               <p className="text-[10px] uppercase tracking-wider text-amber-600/70">
-                Current direction
+                Your direction
               </p>
               <p className="mt-1 text-sm italic leading-relaxed text-amber-200/80">
                 "{creatorDirection}"
@@ -185,9 +294,8 @@ export default function DiscoveryPanel({
             className="w-full resize-none rounded-md border border-slate-700/60 bg-slate-900/60 px-3 py-2.5 text-sm text-slate-200 placeholder-slate-600 outline-none transition focus:border-amber-700/60 focus:ring-1 focus:ring-amber-800/40"
           />
 
-          {/* Example chips */}
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {DIRECTION_EXAMPLES.map((ex) => (
+            {STEER_EXAMPLES.map((ex) => (
               <button
                 key={ex}
                 type="button"
@@ -211,6 +319,10 @@ export default function DiscoveryPanel({
           >
             Apply Direction
           </button>
+
+          <p className="mt-3 text-[10px] leading-relaxed text-slate-600">
+            Future AI-generated branches will adapt to this direction.
+          </p>
         </section>
       </div>
 

@@ -36,10 +36,18 @@ import {
 import {
   REGION_VIRTUAL_ROOTS,
   WORLD_GRAPH,
-  WORLD_NODES,
-  PARENT_MAP,
   getChildren,
 } from "@/lib/worldData";
+import {
+  ACCEPT_CONSEQUENCES,
+  getAllDescendantIds,
+} from "@/lib/worldLogic";
+import {
+  buildCanonTimeline,
+  getCanonNodeTitle,
+} from "@/lib/canonLayout";
+import { getAgentVoice } from "@/lib/agentVoices";
+import { getAgentReasoning } from "@/lib/agentReasoning";
 import { resolveNodeMeta, resolvePanelItem } from "@/lib/worldNodes";
 import type {
   DiscoveryAction,
@@ -49,40 +57,48 @@ import type {
 } from "@/types/discovery";
 
 const ACCEPT_GLOW_MS = 700;
+const EMERGE_GLOW_MS = 800;
 const FIT_DELAY_MS = 80;
 const FIT_DURATION_MS = 600;
 
-// Trail (discovery-mode) layout constants
-const TRAIL_STEP_X = 280;
-const ORBIT_R = 240;
-const ANGLE_SPREAD = 130;
+// Trail (discovery-mode) layout — PAST ← CURRENT → FUTURE
+const PAST_STEP_X = 200;
+const FUTURE_X = 280;
+const FUTURE_ROW_H = 95;
 
-// Canon tree layout constants
-const CANON_COL_W = 270;
-const CANON_ROW_H = 110;
+// Canon tree layout constants (vertical glowing paths)
+const CANON_PATH_EDGE = {
+  stroke: "rgba(167, 139, 250, 0.8)",
+  strokeWidth: 2.5,
+} as const;
+
+const CANON_PATH_MARKER = {
+  type: MarkerType.ArrowClosed,
+  width: 14,
+  height: 14,
+  color: "rgba(167, 139, 250, 0.85)",
+} as const;
+
+const CONSEQUENCE_EDGE_STYLE = {
+  stroke: "rgba(45, 212, 191, 0.55)",
+  strokeWidth: 1.5,
+  strokeDasharray: "4 3",
+} as const;
 
 const TRAIL_EDGE_STYLE = {
   stroke: "rgba(167, 139, 250, 0.6)",
   strokeWidth: 2,
 } as const;
 
-const CANON_EDGE_STYLE = {
-  stroke: "rgba(167, 139, 250, 0.45)",
-  strokeWidth: 1.5,
-  strokeDasharray: "6 4",
-} as const;
-
-const CANON_MARKER_END = {
-  type: MarkerType.ArrowClosed,
-  width: 12,
-  height: 12,
-  color: "rgba(167, 139, 250, 0.55)",
-} as const;
-
-const ORBIT_EDGE_STYLE = {
-  stroke: "rgba(148, 163, 184, 0.25)",
+const FUTURE_EDGE_STYLE = {
+  stroke: "rgba(148, 163, 184, 0.35)",
   strokeWidth: 1,
   strokeDasharray: "5 4",
+} as const;
+
+const PAST_EDGE_STYLE = {
+  stroke: "rgba(100, 116, 139, 0.35)",
+  strokeWidth: 1.5,
 } as const;
 
 const nodeTypes = {
@@ -119,6 +135,7 @@ export default function ConstellationCanvas({
   const [acceptedIds, setAcceptedIds] = useState<string[]>([]);
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
   const [justAcceptedId, setJustAcceptedId] = useState<string | null>(null);
+  const [justEmergedIds, setJustEmergedIds] = useState<Set<string>>(new Set());
   const [creatorTruths, setCreatorTruths] = useState<string[]>([]);
   const [latestShift, setLatestShift] = useState<WorldShift | null>(null);
   const [pulseNonce, setPulseNonce] = useState(0);
@@ -148,7 +165,7 @@ export default function ConstellationCanvas({
     return () => window.clearTimeout(t);
   }, [navState]);
 
-  // ── Trail layout (discovery mode = Exploration Trail) ───────────────────────
+  // ── Trail layout: PAST ← CURRENT → FUTURE ─────────────────────────────────
   const trailLayout = useMemo(() => {
     if (navState.mode !== "discovery") {
       return { nodes: [] as Node[], edges: [] as Edge[] };
@@ -158,15 +175,18 @@ export default function ConstellationCanvas({
     const nodes: Node[] = [];
     const edges: Edge[] = [];
     const focusedId = trail[trail.length - 1];
+    const pastCount = trail.length - 1;
 
-    // Walked path nodes laid out horizontally
+    // PAST + CURRENT: walked path
     trail.forEach((id, i) => {
       const meta = resolveNodeMeta(id);
       const isFocused = i === trail.length - 1;
+      const x = isFocused ? 0 : (i - pastCount) * PAST_STEP_X;
+
       nodes.push({
         id,
         type: "trailNode",
-        position: { x: i * TRAIL_STEP_X, y: 0 },
+        position: { x, y: 0 },
         data: {
           title: meta?.title ?? id,
           category: meta?.category,
@@ -174,10 +194,11 @@ export default function ConstellationCanvas({
           decision: decisions[id] ?? "pending",
           justAccepted: id === justAcceptedId,
           hasCreatorDirection: Boolean(creatorDirections[id]),
+          journeyPhase: isFocused ? "current" : "past",
         } satisfies TrailNodeData,
         draggable: false,
         selectable: true,
-        zIndex: isFocused ? 10 : 6,
+        zIndex: isFocused ? 10 : 4,
       });
 
       if (i > 0) {
@@ -185,42 +206,56 @@ export default function ConstellationCanvas({
           id: `trail-${trail[i - 1]}-${id}`,
           source: trail[i - 1],
           target: id,
-          animated: true,
-          style: TRAIL_EDGE_STYLE,
+          animated: isFocused,
+          style: isFocused ? TRAIL_EDGE_STYLE : PAST_EDGE_STYLE,
         });
       }
     });
 
-    // Possible directions: orbit the focused node (right hemisphere)
+    // FUTURE: route branches (right)
     const dirIds = getChildren(focusedId).filter(
       (id) =>
         !hiddenIds.has(id) &&
         decisions[id] !== "rejected" &&
         !trail.includes(id),
     );
-    const focusX = (trail.length - 1) * TRAIL_STEP_X;
-    const n = dirIds.length;
 
-    dirIds.forEach((id, j) => {
-      const angleDeg =
-        n === 1 ? 0 : -ANGLE_SPREAD / 2 + (ANGLE_SPREAD * j) / (n - 1);
-      const rad = (angleDeg * Math.PI) / 180;
-      const pos = {
-        x: focusX + ORBIT_R * Math.cos(rad),
-        y: ORBIT_R * Math.sin(rad),
-      };
+    const isFocusedAccepted = decisions[focusedId] === "accepted";
+    const consIds = isFocusedAccepted
+      ? (ACCEPT_CONSEQUENCES[focusedId] ?? [])
+          .map((c) => c.id)
+          .filter(
+            (id) =>
+              !hiddenIds.has(id) &&
+              decisions[id] !== "rejected" &&
+              !trail.includes(id),
+          )
+      : [];
+
+    const futureIds = [
+      ...dirIds.map((id) => ({ id, kind: "direction" as const })),
+      ...consIds.map((id) => ({ id, kind: "consequence" as const })),
+    ];
+    const fn = futureIds.length;
+
+    futureIds.forEach((item, j) => {
+      const { id, kind } = item;
+      const y =
+        fn === 1 ? 0 : (j - (fn - 1) / 2) * FUTURE_ROW_H;
       const meta = resolveNodeMeta(id);
 
       nodes.push({
         id,
         type: "trailNode",
-        position: pos,
+        position: { x: FUTURE_X, y },
         data: {
           title: meta?.title ?? id,
-          category: meta?.category,
-          role: "direction",
+          category: meta?.category ?? (kind === "consequence" ? "Consequence" : undefined),
+          role: kind,
           decision: decisions[id] ?? "pending",
+          justEmerged: justEmergedIds.has(id),
           hasCreatorDirection: Boolean(creatorDirections[id]),
+          journeyPhase: "future",
         } satisfies TrailNodeData,
         draggable: false,
         selectable: true,
@@ -228,90 +263,86 @@ export default function ConstellationCanvas({
       });
 
       edges.push({
-        id: `orbit-${focusedId}-${id}`,
+        id: `future-${focusedId}-${id}`,
         source: focusedId,
         target: id,
-        style: ORBIT_EDGE_STYLE,
+        animated: kind === "consequence",
+        style: kind === "consequence" ? CONSEQUENCE_EDGE_STYLE : FUTURE_EDGE_STYLE,
       });
     });
 
     return { nodes, edges };
-  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections]);
+  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds]);
 
-  // ── Canon layout: tree of established truths ─────────────────────────────────
+  // ── Canon layout: compact vertical civilization timeline ─────────────────────
   const canonLayout = useMemo(() => {
     if (navState.mode !== "canon") {
       return { nodes: [] as Node[], edges: [] as Edge[] };
     }
 
-    const acceptedSet = new Set(acceptedIds);
-    if (acceptedSet.size === 0) {
+    const timeline = buildCanonTimeline(acceptedIds, worldSeed);
+    if (!timeline) {
       return { nodes: [] as Node[], edges: [] as Edge[] };
     }
 
-    // Find roots: accepted nodes whose parent is not accepted (or has no parent)
-    const roots = acceptedIds.filter((id) => {
-      const parent = PARENT_MAP[id];
-      return !parent || !acceptedSet.has(parent);
-    });
+    const nodes: Node[] = [];
+    const edges: Edge[] = [];
+    const seedFlowId = "canon-seed";
 
-    // Recursive DFS tree layout: leaf nodes consume rows, parents are centered
-    const positions: Record<string, { x: number; y: number }> = {};
-    let nextRow = 0;
-
-    function layoutNode(id: string, depth: number): void {
-      const children = (WORLD_GRAPH[id] ?? []).filter((c) =>
-        acceptedSet.has(c),
-      );
-      if (children.length === 0) {
-        positions[id] = { x: depth * CANON_COL_W, y: nextRow * CANON_ROW_H };
-        nextRow++;
-        return;
-      }
-      for (const child of children) layoutNode(child, depth + 1);
-      const firstY = positions[children[0]].y;
-      const lastY = positions[children[children.length - 1]].y;
-      positions[id] = { x: depth * CANON_COL_W, y: (firstY + lastY) / 2 };
-    }
-
-    for (const root of roots) layoutNode(root, 0);
-
-    const nodes: Node[] = acceptedIds.map((id) => ({
-      id,
-      type: "trailNode" as const,
-      position: positions[id] ?? { x: 0, y: 0 },
+    nodes.push({
+      id: seedFlowId,
+      type: "trailNode",
+      position: timeline.seedPosition,
       data: {
-        title:
-          WORLD_NODES[id]?.title ?? resolveNodeMeta(id)?.title ?? id,
-        category: WORLD_NODES[id]
-          ? "Established Truth"
-          : resolveNodeMeta(id)?.category,
-        role: "path" as const,
-        decision: "accepted" as DiscoveryDecision,
-        justAccepted: id === justAcceptedId,
+        title: worldSeed,
+        category: "Origin",
+        role: "focused",
+        decision: "pending",
+        isCanonPath: true,
       } satisfies TrailNodeData,
       draggable: false,
-      selectable: true,
-      zIndex: 6,
-    }));
-
-    const edges: Edge[] = acceptedIds.flatMap((id) => {
-      const parent = PARENT_MAP[id];
-      if (!parent || !acceptedSet.has(parent)) return [];
-      return [
-        {
-          id: `canon-${parent}-${id}`,
-          source: parent,
-          target: id,
-          animated: true,
-          style: CANON_EDGE_STYLE,
-          markerEnd: CANON_MARKER_END,
-        },
-      ];
+      selectable: false,
+      zIndex: 10,
     });
 
+    for (const route of timeline.routes) {
+      route.nodeIds.forEach((id, i) => {
+        const flowId = `canon-${route.columnIndex}::${id}`;
+        const title = getCanonNodeTitle(id, worldSeed);
+
+        nodes.push({
+          id: flowId,
+          type: "trailNode",
+          position: route.positions[id] ?? { x: 0, y: 0 },
+          data: {
+            title,
+            category: "Established Truth",
+            role: "path",
+            decision: "accepted",
+            isCanonPath: true,
+            justAccepted: id === justAcceptedId,
+          } satisfies TrailNodeData,
+          draggable: false,
+          selectable: true,
+          zIndex: 6,
+        });
+
+        const prevFlowId =
+          i === 0 ? seedFlowId : `canon-${route.columnIndex}::${route.nodeIds[i - 1]}`;
+
+        edges.push({
+          id: `canon-edge-${prevFlowId}-${flowId}`,
+          source: prevFlowId,
+          target: flowId,
+          animated: true,
+          style: CANON_PATH_EDGE,
+          markerEnd: CANON_PATH_MARKER,
+        });
+      });
+    }
+
     return { nodes, edges };
-  }, [navState.mode, acceptedIds, justAcceptedId]);
+  }, [navState.mode, acceptedIds, worldSeed, justAcceptedId]);
 
   // ── Nodes ─────────────────────────────────────────────────────────────────
   const nodes = useMemo(() => {
@@ -393,14 +424,15 @@ export default function ConstellationCanvas({
     return [];
   }, [navState, trailLayout.edges, canonLayout.edges]);
 
-  // Directions for the currently selected node in the side panel
+  // Directions + unlocked consequences for the side panel
   const panelDirections = useMemo(() => {
     if (!selectedItem) return [];
     const id =
       selectedItem.kind === "discovery"
         ? selectedItem.discovery.id
         : selectedItem.consequence.id;
-    return getChildren(id)
+
+    const routeDirs = getChildren(id)
       .filter((dirId) => !hiddenIds.has(dirId) && decisions[dirId] !== "rejected")
       .map((dirId) => {
         const meta = resolveNodeMeta(dirId);
@@ -409,8 +441,27 @@ export default function ConstellationCanvas({
           title: meta?.title ?? dirId,
           category: meta?.category ?? "",
           decision: decisions[dirId] ?? "pending",
+          kind: "route" as const,
         };
       });
+
+    const consDirs =
+      decisions[id] === "accepted"
+        ? (ACCEPT_CONSEQUENCES[id] ?? [])
+            .filter(
+              (c) =>
+                !hiddenIds.has(c.id) && decisions[c.id] !== "rejected",
+            )
+            .map((c) => ({
+              id: c.id,
+              title: c.title,
+              category: c.category,
+              decision: decisions[c.id] ?? "pending",
+              kind: "consequence" as const,
+            }))
+        : [];
+
+    return [...routeDirs, ...consDirs];
   }, [selectedItem, hiddenIds, decisions]);
 
   // ── Trail navigation ────────────────────────────────────────────────────────
@@ -453,7 +504,11 @@ export default function ConstellationCanvas({
 
       // Canon mode: clicking a node selects it for the panel
       if (mode === "canon" && node.type === "trailNode") {
-        const item = resolvePanelItem(node.id);
+        if (node.id === "canon-seed") return;
+        const rawId = node.id.includes("::")
+          ? node.id.split("::")[1]
+          : node.id;
+        const item = resolvePanelItem(rawId);
         if (item) setSelectedItem(item);
         return;
       }
@@ -514,11 +569,13 @@ export default function ConstellationCanvas({
           : selectedItem.consequence.id;
 
       if (action === "unaccept") {
-        // Also unaccept world-graph descendants
-        const descendants = getWorldDescendantIds(id).filter((did) =>
+        const worldDesc = getWorldDescendantIds(id).filter((did) =>
           acceptedIds.includes(did),
         );
-        const toReset = new Set([id, ...descendants]);
+        const consDesc = getAllDescendantIds(id).filter((did) =>
+          acceptedIds.includes(did),
+        );
+        const toReset = new Set([id, ...worldDesc, ...consDesc]);
         setDecisions((prev) => {
           const next = { ...prev };
           for (const rid of toReset) next[rid] = "pending";
@@ -540,14 +597,24 @@ export default function ConstellationCanvas({
       if (action === "accept") {
         setAcceptedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
         setJustAcceptedId(id);
+
+        const consequences = ACCEPT_CONSEQUENCES[id] ?? [];
+        if (consequences.length > 0) {
+          setJustEmergedIds(new Set(consequences.map((c) => c.id)));
+          window.setTimeout(() => setJustEmergedIds(new Set()), EMERGE_GLOW_MS);
+        }
+
         window.setTimeout(() => setJustAcceptedId(null), ACCEPT_GLOW_MS);
       }
 
       if (action === "reject") {
-        // Cascade-unaccept any world-graph descendants that were accepted
-        const descendants = getWorldDescendantIds(id).filter((did) =>
+        const worldDesc = getWorldDescendantIds(id).filter((did) =>
           acceptedIds.includes(did),
         );
+        const consDesc = getAllDescendantIds(id).filter((did) =>
+          acceptedIds.includes(did),
+        );
+        const descendants = [...new Set([...worldDesc, ...consDesc])];
         if (descendants.length > 0) {
           setDecisions((prev) => {
             const next = { ...prev };
@@ -612,6 +679,28 @@ export default function ConstellationCanvas({
     [selectedNodeId],
   );
 
+  const agentVoice = useMemo(() => {
+    if (!selectedNodeId) return null;
+    const regionId =
+      navState.mode === "discovery" || navState.mode === "constellation"
+        ? navState.regionId
+        : undefined;
+    return getAgentVoice(selectedNodeId, regionId);
+  }, [selectedNodeId, navState]);
+
+  const agentReasoning = useMemo(() => {
+    if (!selectedNodeId) return null;
+    return getAgentReasoning(selectedNodeId);
+  }, [selectedNodeId]);
+
+  const journeySteps = useMemo(() => {
+    if (navState.mode !== "discovery") return [];
+    return navState.trail.map((id) => ({
+      id,
+      title: resolveNodeMeta(id)?.title ?? id,
+    }));
+  }, [navState]);
+
   return (
     <div className="relative h-screen w-screen bg-[#0a0a0f]">
       <WorldSidebar
@@ -623,6 +712,28 @@ export default function ConstellationCanvas({
       <Breadcrumb navState={navState} onNavigate={handleNavigate} />
       <WorldPulse shift={latestShift} nonce={pulseNonce} />
       <WorldWhisper onSubmit={handleAddTruth} />
+      {navState.mode === "discovery" && (
+        <div
+          className="pointer-events-none absolute z-10 flex items-center justify-center gap-0"
+          style={{ left: "176px", right: "320px", top: "44px" }}
+        >
+          <div className="flex flex-1 justify-center">
+            <span className="text-[9px] uppercase tracking-[0.2em] text-slate-600/80">
+              Past
+            </span>
+          </div>
+          <div className="flex flex-1 justify-center">
+            <span className="text-[9px] uppercase tracking-[0.2em] text-violet-400/70">
+              Current
+            </span>
+          </div>
+          <div className="flex flex-1 justify-center">
+            <span className="text-[9px] uppercase tracking-[0.2em] text-slate-500/80">
+              Future
+            </span>
+          </div>
+        </div>
+      )}
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -651,6 +762,9 @@ export default function ConstellationCanvas({
           onClose={() => setSelectedItem(null)}
           creatorDirection={selectedNodeId ? (creatorDirections[selectedNodeId] ?? null) : null}
           onSetDirection={handleSetDirection}
+          agentVoice={agentVoice}
+          agentReasoning={agentReasoning}
+          journeySteps={journeySteps}
         />
       )}
     </div>

@@ -78,13 +78,13 @@ export const ACCEPT_CONSEQUENCES: Record<string, WorldConsequence[]> = {
   // ── CHAIN 2 ───────────────────────────────────────────────────────────────
   "tree-priests": [
     {
-      id: "memory-tax",
-      title: "Memory Tax",
+      id: "forest-laws",
+      title: "Forest Laws",
       category: "Law",
       description:
-        "The Tree Priests decree that every pilgrim passing through the Sacred Forest must surrender one memory as a tithe. The memory is sealed in a clay vessel and stored in the roots of the goddess's tree.",
+        "The Tree Priests inscribe the goddess's will into bark tablets hung at every forest entrance. The laws govern who may enter, what may be taken, and what must be surrendered — but the oldest tablets contradict the newest.",
       whyItMatters:
-        "Power has formalised into law. What was once devotion is now compulsion — and compulsion breeds resistance.",
+        "When faith becomes legislation, the forest stops being a place and becomes a jurisdiction.",
       parentId: "tree-priests",
     },
     {
@@ -98,13 +98,13 @@ export const ACCEPT_CONSEQUENCES: Record<string, WorldConsequence[]> = {
       parentId: "tree-priests",
     },
     {
-      id: "memory-smugglers",
-      title: "Memory Smugglers",
+      id: "exiled-priesthood",
+      title: "Exiled Priesthood",
       category: "Faction",
       description:
-        "A shadow network that helps pilgrims bypass the Memory Tax by substituting counterfeit memories — carefully constructed half-truths that satisfy the priests without giving anything real away.",
+        "Priests who refused the Forest Laws were cast out and now wander the pilgrimage routes, teaching a version of the goddess's will that the order officially denies.",
       whyItMatters:
-        "Resistance has organised. The world now contains people who know how to lie in the language of memory.",
+        "Every orthodoxy creates its own heresy. The exiled priests remember what the order chose to forget.",
       parentId: "tree-priests",
     },
   ],
@@ -132,18 +132,64 @@ export const ACCEPT_CONSEQUENCES: Record<string, WorldConsequence[]> = {
       parentId: "memory-tax",
     },
     {
-      id: "forest-civil-war",
-      title: "Forest Civil War",
-      category: "Conflict",
+      id: "memory-smugglers",
+      title: "Memory Smugglers",
+      category: "Faction",
       description:
-        "The Tree Priests fracture between the Taxers — who believe the tithe sustains the goddess — and the Protectors, who argue it is slowly killing her. The sacred grove is now a war zone.",
+        "A shadow network that helps pilgrims bypass the Memory Tax by substituting counterfeit memories — carefully constructed half-truths that satisfy the priests without giving anything real away.",
       whyItMatters:
-        "The institution that protected the goddess has become the greatest threat to her survival. Truth has consequences that cannot be contained.",
+        "Resistance has organised. The world now contains people who know how to lie in the language of memory.",
       parentId: "memory-tax",
     },
   ],
 
+  // ── Forgotten Temple consequences ─────────────────────────────────────────
+  "forgotten-temple": [
+    {
+      id: "temple-caretaker",
+      title: "Temple Caretaker",
+      category: "Character",
+      description:
+        "An elderly figure who tends the Forgotten Temple without being seen by visitors. They replace offerings, sweep leaves from the threshold, and leave fresh incense every dawn. Nobody in the village will admit to knowing them.",
+      whyItMatters:
+        "Someone is keeping the temple alive. That someone has a reason the village refuses to name.",
+      parentId: "forgotten-temple",
+    },
+    {
+      id: "buried-idol",
+      title: "Buried Idol",
+      category: "Artifact",
+      description:
+        "Beneath the temple floor lies an idol with its face deliberately chipped away. Excavation attempts always stop at the same depth — not because of rock, but because workers report dreams of drowning in their own names.",
+      whyItMatters:
+        "The god was not forgotten by accident. Someone buried it and hoped the earth would finish the job.",
+      parentId: "forgotten-temple",
+    },
+    {
+      id: "forbidden-prayer",
+      title: "Forbidden Prayer",
+      category: "Ritual",
+      description:
+        "A prayer recited only inside the temple, never written down. Those who learn it by listening report that it answers — not with comfort, but with a specific memory they did not know they had lost.",
+      whyItMatters:
+        "A prayer that returns memory is either salvation or a trap. The temple does not distinguish between the two.",
+      parentId: "forgotten-temple",
+    },
+  ],
+
   // ── Supporting chains (other discoveries) ────────────────────────────────
+  "memory-registry": [
+    {
+      id: "memory-tax",
+      title: "Memory Tax",
+      category: "Law",
+      description:
+        "The Tree Priests decree that every pilgrim passing through the Sacred Forest must surrender one memory as a tithe. The memory is sealed in a clay vessel and stored in the roots of the goddess's tree.",
+      whyItMatters:
+        "Power has formalised into law. What was once devotion is now compulsion — and compulsion breeds resistance.",
+      parentId: "memory-registry",
+    },
+  ],
   "memory-trapped-spirits": [
     {
       id: "memory-harvesters",
