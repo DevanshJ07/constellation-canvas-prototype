@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { CONSTELLATION_REGIONS } from "@/lib/regions";
+import { getNodeTitle } from "@/lib/worldNodes";
 import type { NavState } from "@/types/discovery";
 
 type Segment = {
@@ -46,6 +47,30 @@ export default function Breadcrumb({ navState, onNavigate }: BreadcrumbProps) {
     }
 
     if (navState.mode === "discovery") {
+      const trail = navState.trail;
+      // Skip the first trail item if it is the virtual region root
+      // (its label is already shown as the region segment)
+      const displayTrail =
+        trail.length > 0 && trail[0] === navState.regionId
+          ? trail.slice(1)
+          : trail;
+
+      const trailSegments: Segment[] = displayTrail.map((id, i) => {
+        const isLast = i === displayTrail.length - 1;
+        // Map back to real trail index (+1 if we skipped the virtual root)
+        const realIdx = trail.length > 0 && trail[0] === navState.regionId ? i + 1 : i;
+        return {
+          label: getNodeTitle(id),
+          onClick: isLast
+            ? undefined
+            : () =>
+                onNavigate({
+                  ...navState,
+                  trail: trail.slice(0, realIdx + 1),
+                }),
+        };
+      });
+
       return [
         worldSegment,
         {
@@ -53,11 +78,10 @@ export default function Breadcrumb({ navState, onNavigate }: BreadcrumbProps) {
           icon: region?.icon,
           onClick: () =>
             onNavigate({
-              mode: "constellation",
-              regionId: navState.regionId,
+              mode: "overview",
             }),
         },
-        { label: navState.discoveryTitle },
+        ...trailSegments,
       ];
     }
 

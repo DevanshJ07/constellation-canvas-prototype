@@ -4,7 +4,6 @@ import type { ConstellationRegionId } from "@/lib/regions";
 import {
   CONSTELLATION_REGIONS,
   DISCOVERY_REGION_MAP,
-  HIDDEN_DISCOVERY_LABELS,
   getRegionById,
   getRegionTheme,
 } from "@/lib/regions";
@@ -64,8 +63,6 @@ export function buildConstellationLayout(
     const indexInRegion = regionDiscoveryCounts[regionId] ?? 0;
     regionDiscoveryCounts[regionId] = indexInRegion + 1;
 
-    const hiddenLabel = HIDDEN_DISCOVERY_LABELS[discovery.id];
-
     return {
       id: discovery.id,
       type: "discovery",
@@ -73,8 +70,7 @@ export function buildConstellationLayout(
       data: {
         discovery,
         regionId,
-        isHidden: Boolean(hiddenLabel),
-        hiddenLabel,
+        isHidden: false,
       },
       draggable: false,
       zIndex: 5,
@@ -110,17 +106,7 @@ export function buildConstellationLayout(
     id: rel.id,
     source: rel.sourceId,
     target: rel.targetId,
-    label: rel.label,
-    labelStyle: {
-      fill: "#e2e8f0",
-      fontSize: 11,
-      fontWeight: 600,
-      letterSpacing: "0.1em",
-    },
-    labelBgStyle: { fill: "#0a0a0f", fillOpacity: 0.9 },
-    labelBgPadding: [4, 8] as [number, number],
-    labelBgBorderRadius: 4,
-    style: { stroke: "rgba(203, 213, 225, 0.45)", strokeWidth: 1.5 },
+    style: { stroke: "rgba(203, 213, 225, 0.3)", strokeWidth: 1 },
     zIndex: 2,
   }));
 

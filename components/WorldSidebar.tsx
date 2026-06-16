@@ -7,6 +7,7 @@ type WorldSidebarProps = {
   navState: NavState;
   onNavigate: (state: NavState) => void;
   acceptedCount: number;
+  creatorTruths: string[];
 };
 
 type NavButtonProps = {
@@ -43,17 +44,19 @@ export default function WorldSidebar({
   navState,
   onNavigate,
   acceptedCount,
+  creatorTruths,
 }: WorldSidebarProps) {
   const { mode } = navState;
 
   const focusedRegionLabel =
     mode === "constellation" || mode === "discovery"
-      ? (CONSTELLATION_REGIONS.find((r) => r.id === navState.regionId)
-          ?.label ?? "")
+      ? (CONSTELLATION_REGIONS.find((r) => r.id === navState.regionId)?.label ??
+        "")
       : "";
 
   return (
-    <nav className="absolute left-0 top-0 z-20 flex h-full w-44 flex-col border-r border-slate-800/60 bg-slate-950/88 backdrop-blur-md">
+    <nav className="absolute left-0 top-0 z-20 flex h-full w-44 flex-col border-r border-slate-800/60 bg-slate-950/90 backdrop-blur-md">
+      {/* Navigation */}
       <div className="px-4 pt-5 pb-3">
         <p className="text-[9px] uppercase tracking-[0.22em] text-slate-600">
           Navigate
@@ -76,6 +79,7 @@ export default function WorldSidebar({
         />
       </div>
 
+      {/* Current focus */}
       {(mode === "constellation" || mode === "discovery") && (
         <>
           <div className="mx-4 mt-5 mb-1 h-px bg-slate-800/70" />
@@ -89,7 +93,7 @@ export default function WorldSidebar({
               <>
                 <div className="rounded-lg px-3 py-2">
                   <p className="text-[9px] uppercase tracking-[0.12em] text-slate-600">
-                    Discovery
+                    Exploring
                   </p>
                   <p className="mt-0.5 text-xs font-medium leading-snug text-slate-200">
                     {navState.discoveryTitle}
@@ -97,16 +101,11 @@ export default function WorldSidebar({
                 </div>
                 <button
                   type="button"
-                  onClick={() =>
-                    onNavigate({
-                      mode: "constellation",
-                      regionId: navState.regionId,
-                    })
-                  }
+                  onClick={() => onNavigate({ mode: "overview" })}
                   className="flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-slate-500 transition hover:bg-slate-800/40 hover:text-slate-300"
                 >
                   <span>←</span>
-                  <span>{focusedRegionLabel}</span>
+                  <span>World Overview</span>
                 </button>
               </>
             )}
@@ -131,6 +130,32 @@ export default function WorldSidebar({
                 </button>
               </>
             )}
+          </div>
+        </>
+      )}
+
+      {/* Creator Truths (from World Whisper) */}
+      {creatorTruths.length > 0 && (
+        <>
+          <div className="mx-4 mt-5 mb-1 h-px bg-slate-800/70" />
+          <div className="px-4 pt-3 pb-2">
+            <p className="text-[9px] uppercase tracking-[0.22em] text-slate-600">
+              Creator Truths
+            </p>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <div className="flex flex-col gap-1.5 px-4 pb-4">
+              {creatorTruths.map((truth, i) => (
+                <div key={i} className="flex items-start gap-1.5">
+                  <span className="mt-0.5 shrink-0 text-[10px] text-violet-600">
+                    •
+                  </span>
+                  <p className="text-[11px] leading-snug text-violet-200/80">
+                    {truth}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         </>
       )}

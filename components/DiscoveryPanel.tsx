@@ -1,24 +1,51 @@
 "use client";
 
+import { useState } from "react";
 import type {
   DiscoveryAction,
   DiscoveryDecision,
   PanelItem,
 } from "@/types/discovery";
 
+export type PanelDirection = {
+  id: string;
+  title: string;
+  category: string;
+  decision: DiscoveryDecision;
+};
+
+const DIRECTION_EXAMPLES = [
+  "Make this more psychological than supernatural.",
+  "Connect this to the old lady character.",
+  "Make the temple secretly alive.",
+  "Turn this into a political conflict.",
+  "Make this branch darker and more tragic.",
+];
+
 type DiscoveryPanelProps = {
   item: PanelItem;
   decision: DiscoveryDecision;
+  directions: PanelDirection[];
+  activeTrail: string[];
+  onNavigateDirection: (id: string) => void;
   onAction: (action: DiscoveryAction) => void;
   onClose: () => void;
+  creatorDirection: string | null;
+  onSetDirection: (direction: string) => void;
 };
 
 export default function DiscoveryPanel({
   item,
   decision,
+  directions,
+  activeTrail,
+  onNavigateDirection,
   onAction,
   onClose,
+  creatorDirection,
+  onSetDirection,
 }: DiscoveryPanelProps) {
+  const [draftDirection, setDraftDirection] = useState("");
   const title =
     item.kind === "discovery" ? item.discovery.title : item.consequence.title;
   const category =
@@ -32,27 +59,23 @@ export default function DiscoveryPanel({
   const whyItMatters =
     item.kind === "discovery"
       ? item.discovery.whyItMatters
-      : item.consequence.whyItMatters ?? null;
-
-  const hasConsequences =
-    item.kind === "consequence"
-      ? false
-      : true; // discoveries always potentially have consequences
+      : (item.consequence.whyItMatters ?? null);
 
   const isAccepted = decision === "accepted";
-  const isSaved = decision === "saved";
   const isRejected = decision === "rejected";
   const canDecide = decision === "pending" || decision === "saved";
 
   return (
-    <aside className="absolute right-0 top-0 z-10 flex h-full w-80 flex-col border-l border-slate-800/80 bg-slate-950/90 backdrop-blur-md">
+    <aside className="absolute right-0 top-0 z-10 flex h-full w-80 flex-col border-l border-slate-800/80 bg-slate-950/92 backdrop-blur-md">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 border-b border-slate-800/80 px-5 py-4">
         <div>
           <p className="text-xs uppercase tracking-wider text-violet-400/80">
             {category}
           </p>
-          <h2 className="mt-1 text-lg font-medium leading-snug text-slate-100">
+          <h2
+            className={`mt-1 text-lg font-medium leading-snug ${isAccepted ? "text-emerald-100" : "text-slate-100"}`}
+          >
             {title}
           </h2>
         </div>
@@ -86,23 +109,121 @@ export default function DiscoveryPanel({
           </section>
         )}
 
-        {item.kind === "consequence" && isAccepted && (
+        {/* Possible Directions — the trail forward */}
+        {directions.length > 0 && (
           <section>
-            <p className="text-xs leading-relaxed text-teal-500/70">
-              This is established in the world. Accepting it may reveal further
-              consequences.
+            <h3 className="mb-1 text-xs uppercase tracking-wider text-slate-500">
+              Possible Directions
+            </h3>
+            <p className="mb-3 text-[11px] text-slate-600">
+              Where does this lead?
             </p>
+            <ul className="flex flex-col gap-2">
+              {directions.map((dir) => {
+                const onTrail = activeTrail.includes(dir.id);
+                const dirAccepted = dir.decision === "accepted";
+                return (
+                  <li key={dir.id}>
+                    <button
+                      type="button"
+                      onClick={() => onNavigateDirection(dir.id)}
+                      className={`w-full rounded-lg border px-3 py-2.5 text-left transition-all ${
+                        dirAccepted
+                          ? "border-emerald-700/40 bg-emerald-950/20 hover:border-emerald-500/50"
+                          : onTrail
+                            ? "border-violet-600/45 bg-violet-950/20 hover:border-violet-500/60"
+                            : "border-slate-800/60 bg-slate-900/20 hover:border-slate-600/60"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p
+                          className={`text-sm font-medium ${dirAccepted ? "text-emerald-200" : "text-slate-200"}`}
+                        >
+                          {dir.title}
+                        </p>
+                        <span className="shrink-0 text-[10px] text-slate-600">
+                          {dirAccepted ? "● canon" : "→"}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-[11px] uppercase tracking-wider text-slate-600">
+                        {dir.category}
+                      </p>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           </section>
         )}
+
+        {/* Creator Direction */}
+        <section className="rounded-lg border border-amber-900/30 bg-amber-950/10 p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-[11px] text-amber-400/80">✦</span>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-amber-400/80">
+              Creator Direction
+            </h3>
+          </div>
+
+          {/* Saved direction display */}
+          {creatorDirection && (
+            <div className="mb-3 rounded-md border border-amber-800/30 bg-amber-950/30 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-amber-600/70">
+                Current direction
+              </p>
+              <p className="mt-1 text-sm italic leading-relaxed text-amber-200/80">
+                "{creatorDirection}"
+              </p>
+            </div>
+          )}
+
+          <textarea
+            value={draftDirection}
+            onChange={(e) => setDraftDirection(e.target.value)}
+            placeholder="Add your own idea, twist, or constraint for this branch..."
+            rows={3}
+            className="w-full resize-none rounded-md border border-slate-700/60 bg-slate-900/60 px-3 py-2.5 text-sm text-slate-200 placeholder-slate-600 outline-none transition focus:border-amber-700/60 focus:ring-1 focus:ring-amber-800/40"
+          />
+
+          {/* Example chips */}
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {DIRECTION_EXAMPLES.map((ex) => (
+              <button
+                key={ex}
+                type="button"
+                onClick={() => setDraftDirection(ex)}
+                className="rounded-full border border-slate-700/50 bg-slate-900/40 px-2 py-0.5 text-[10px] text-slate-500 transition hover:border-amber-800/50 hover:text-amber-300/80"
+              >
+                {ex}
+              </button>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            disabled={!draftDirection.trim()}
+            onClick={() => {
+              if (!draftDirection.trim()) return;
+              onSetDirection(draftDirection.trim());
+              setDraftDirection("");
+            }}
+            className="mt-3 w-full rounded-lg border border-amber-800/40 bg-amber-950/30 px-4 py-2 text-sm font-medium text-amber-300 transition hover:border-amber-700/60 hover:bg-amber-950/50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Apply Direction
+          </button>
+        </section>
       </div>
 
-      {/* Footer actions — available for both discoveries and consequences */}
+      {/* Footer actions */}
       <div className="border-t border-slate-800/80 px-5 py-4">
         {isAccepted ? (
           <div className="flex flex-col gap-2">
-            <p className="mb-1 text-center text-sm text-emerald-400">
-              Established in the world
-            </p>
+            <div className="mb-1 flex items-center justify-center gap-2">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              <p className="text-sm font-medium text-emerald-300">
+                Established Truth
+              </p>
+            </div>
             <button
               type="button"
               onClick={() => onAction("unaccept")}
@@ -116,16 +237,16 @@ export default function DiscoveryPanel({
             <button
               type="button"
               onClick={() => onAction("accept")}
-              className="rounded-lg bg-emerald-600/90 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-500"
+              className="rounded-lg bg-emerald-700/90 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-600"
             >
-              Accept
+              Establish as Truth
             </button>
             <button
               type="button"
               onClick={() => onAction("save")}
               className="rounded-lg border border-sky-500/40 bg-sky-950/40 px-4 py-2.5 text-sm font-medium text-sky-200 transition hover:border-sky-400/60 hover:bg-sky-950/60"
             >
-              Save For Later
+              Keep as Potential
             </button>
             <button
               type="button"
@@ -140,7 +261,7 @@ export default function DiscoveryPanel({
             Rejected
           </p>
         ) : (
-          <p className="text-center text-sm text-sky-400">Saved for later</p>
+          <p className="text-center text-sm text-sky-400">Kept as Potential</p>
         )}
       </div>
     </aside>

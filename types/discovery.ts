@@ -32,6 +32,11 @@ export type PanelItem =
   | { kind: "discovery"; discovery: Discovery }
   | { kind: "consequence"; consequence: WorldConsequence };
 
+export type HistoryEvent =
+  | { kind: "established"; id: string; title: string }
+  | { kind: "emerged"; id: string; title: string; causedById: string }
+  | { kind: "removed"; id: string; title: string };
+
 export type NavState =
   | { mode: "overview" }
   | { mode: "constellation"; regionId: ConstellationRegionId }
@@ -40,5 +45,6 @@ export type NavState =
       discoveryId: string;
       regionId: ConstellationRegionId;
       discoveryTitle: string;
+      trail: string[];
     }
   | { mode: "canon" };
