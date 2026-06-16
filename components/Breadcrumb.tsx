@@ -96,7 +96,7 @@ export default function Breadcrumb({ navState, onNavigate }: BreadcrumbProps) {
       {segments.map((seg, i) => (
         <span key={i} className="flex items-center gap-1.5">
           {i > 0 && (
-            <span className="text-slate-700 select-none">›</span>
+            <span className="text-slate-500 select-none">›</span>
           )}
           {seg.icon && (
             <span className="text-[13px] leading-none opacity-60">
@@ -107,12 +107,12 @@ export default function Breadcrumb({ navState, onNavigate }: BreadcrumbProps) {
             <button
               type="button"
               onClick={seg.onClick}
-              className="text-xs text-slate-500 transition hover:text-slate-300"
+              className="text-xs font-medium text-slate-400 transition hover:text-slate-100"
             >
               {seg.label}
             </button>
           ) : (
-            <span className="text-xs text-slate-300">{seg.label}</span>
+            <span className="text-xs font-medium text-slate-100">{seg.label}</span>
           )}
         </span>
       ))}

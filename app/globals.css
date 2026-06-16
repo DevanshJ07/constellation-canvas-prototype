@@ -178,3 +178,79 @@ body {
 .animate-trail-current {
   animation: trail-current 3s ease-in-out infinite;
 }
+
+/* ── Ripple Effect Animations ─────────────────────────────────────────────── */
+
+@keyframes ripple-supported {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0),
+                0 0 16px rgba(52, 211, 153, 0.3);
+  }
+  40% {
+    box-shadow: 0 0 0 6px rgba(52, 211, 153, 0.12),
+                0 0 28px rgba(52, 211, 153, 0.55);
+  }
+}
+
+.animate-ripple-supported {
+  animation: ripple-supported 1.4s ease-in-out 2;
+  border-color: rgba(52, 211, 153, 0.75) !important;
+}
+
+@keyframes ripple-contradicted {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0),
+                0 0 12px rgba(244, 63, 94, 0.2);
+  }
+  40% {
+    box-shadow: 0 0 0 6px rgba(244, 63, 94, 0.1),
+                0 0 26px rgba(244, 63, 94, 0.5);
+  }
+}
+
+.animate-ripple-contradicted {
+  animation: ripple-contradicted 1.2s ease-in-out 2;
+  border-color: rgba(244, 63, 94, 0.7) !important;
+}
+
+@keyframes ripple-unlocked {
+  0% {
+    opacity: 0.4;
+    transform: scale(0.85);
+    box-shadow: 0 0 0 0 rgba(45, 212, 191, 0);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+    box-shadow: 0 0 0 6px rgba(45, 212, 191, 0.12),
+                0 0 24px rgba(45, 212, 191, 0.5);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 12px rgba(45, 212, 191, 0.3);
+  }
+}
+
+.animate-ripple-unlocked {
+  animation: ripple-unlocked 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  border-color: rgba(45, 212, 191, 0.7) !important;
+}
+
+@keyframes coherence-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+.animate-coherence-pulse {
+  animation: coherence-pulse 2.5s ease-in-out infinite;
+}
+
+@keyframes ripple-label-in {
+  0% { opacity: 0; transform: translateY(-4px) scale(0.92); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.animate-ripple-label {
+  animation: ripple-label-in 0.3s ease-out forwards;
+}

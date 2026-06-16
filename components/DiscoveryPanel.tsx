@@ -20,6 +20,8 @@ export type PanelDirection = {
 export type JourneyStep = {
   id: string;
   title: string;
+  subtitle?: string;
+  role?: "origin" | "step" | "current";
 };
 
 const STEER_EXAMPLES = [
@@ -41,6 +43,7 @@ type DiscoveryPanelProps = {
   onSetDirection: (direction: string) => void;
   agentVoice: AgentVoice | null;
   agentReasoning: AgentReasoning | null;
+  potentialConsequences: string[];
 };
 
 export default function DiscoveryPanel({
@@ -56,6 +59,7 @@ export default function DiscoveryPanel({
   onSetDirection,
   agentVoice,
   agentReasoning,
+  potentialConsequences,
 }: DiscoveryPanelProps) {
   const [draftDirection, setDraftDirection] = useState("");
   const title =
@@ -105,32 +109,67 @@ export default function DiscoveryPanel({
       <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
         {/* Your Journey */}
         {journeySteps.length > 0 && (
-          <section className="rounded-lg border border-violet-900/30 bg-violet-950/10 px-4 py-3">
-            <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-violet-400/80">
+          <section className="rounded-md border border-violet-800/40 bg-violet-950/20 px-3 py-2.5">
+            <h3 className="mb-2.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-violet-300/90">
               Your Journey
             </h3>
-            <div className="flex flex-col items-start gap-0.5">
+            <div className="flex flex-col items-stretch gap-0">
               {journeySteps.map((step, i) => {
-                const isCurrent = i === journeySteps.length - 1;
+                const isCurrent = step.role === "current" || i === journeySteps.length - 1;
+                const isOrigin = step.role === "origin" || step.id === "__world-seed__";
                 return (
-                  <div key={step.id} className="flex flex-col items-start">
+                  <div key={step.id} className="flex flex-col">
                     {i > 0 && (
-                      <span className="my-0.5 ml-2 text-[10px] text-slate-600 select-none">
-                        ↓
-                      </span>
+                      <div className="my-1.5 flex justify-center">
+                        <span className="text-[10px] leading-none text-slate-600/80 select-none">
+                          ↓
+                        </span>
+                      </div>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => !isCurrent && onNavigateDirection(step.id)}
-                      disabled={isCurrent}
-                      className={`text-left text-sm leading-snug transition ${
+                    <div
+                      className={`rounded-md px-2 py-1.5 ${
                         isCurrent
-                          ? "cursor-default font-semibold text-violet-200"
-                          : "text-slate-400 hover:text-slate-200"
+                          ? "border border-violet-600/40 bg-violet-950/35"
+                          : isOrigin
+                            ? "border border-slate-700/50 bg-slate-900/30"
+                            : ""
                       }`}
                     >
-                      {step.title}
-                    </button>
+                      {isOrigin && (
+                        <p className="mb-0.5 text-[8px] uppercase tracking-[0.14em] text-slate-600">
+                          Origin
+                        </p>
+                      )}
+                      {isCurrent && !isOrigin && (
+                        <p className="mb-0.5 text-[8px] uppercase tracking-[0.14em] text-violet-500/70">
+                          Current
+                        </p>
+                      )}
+                      {isOrigin || isCurrent ? (
+                        <span
+                          className={`block text-left leading-snug ${
+                            isCurrent
+                              ? "text-xs font-medium text-violet-50"
+                              : "text-xs text-slate-300"
+                          }`}
+                        >
+                          {step.title}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => onNavigateDirection(step.id)}
+                          className="block w-full text-left text-xs leading-snug text-slate-400 transition hover:text-slate-100"
+                        >
+                          {step.title}
+                        </button>
+                      )}
+                      {step.subtitle && isOrigin && (
+                        <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                          {step.subtitle}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -153,6 +192,29 @@ export default function DiscoveryPanel({
             <p className="text-sm leading-relaxed text-slate-400">
               {whyItMatters}
             </p>
+          </section>
+        )}
+
+        {/* Consequences preview */}
+        {potentialConsequences.length > 0 && (
+          <section className="rounded-md border border-teal-900/30 bg-teal-950/10 px-3 py-2.5">
+            <h3 className="mb-1.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-teal-400/80">
+              Consequences
+            </h3>
+            <p className="mb-2 text-[11px] leading-snug text-slate-500">
+              Establishing this as Truth may unlock:
+            </p>
+            <ul className="space-y-1">
+              {potentialConsequences.map((name) => (
+                <li
+                  key={name}
+                  className="flex items-start gap-2 text-xs text-teal-200/85"
+                >
+                  <span className="mt-0.5 text-teal-500/70">✓</span>
+                  {name}
+                </li>
+              ))}
+            </ul>
           </section>
         )}
 
@@ -201,10 +263,13 @@ export default function DiscoveryPanel({
           </section>
         )}
 
-        {/* Agent voice — creative collaborator */}
+        {/* Agent Insight — creative collaborator */}
         {agentVoice && (
           <section className="rounded-lg border border-slate-800/60 bg-slate-900/30 px-4 py-3">
-            <p className={`text-[10px] font-semibold uppercase tracking-wider ${agentVoice.accentClass}`}>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              Agent Insight
+            </p>
+            <p className={`mt-2 text-[10px] font-semibold uppercase tracking-wider ${agentVoice.accentClass}`}>
               {agentVoice.agentLabel}
             </p>
             <p className="mt-2 text-sm italic leading-relaxed text-slate-400">

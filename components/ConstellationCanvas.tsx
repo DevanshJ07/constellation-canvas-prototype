@@ -24,6 +24,12 @@ import DiscoveryNode, {
   type DiscoveryNodeData,
 } from "@/components/DiscoveryNode";
 import TrailNode, { type TrailNodeData } from "@/components/TrailNode";
+import GraphMinimap from "@/components/GraphMinimap";
+import ZoomControlsBar from "@/components/ZoomControlsBar";
+import CanonUniverseOverlay from "@/components/CanonUniverseOverlay";
+import WorldSynthesisModal from "@/components/WorldSynthesisModal";
+import EvolutionEventModal from "@/components/EvolutionEventModal";
+import RippleModal from "@/components/RippleModal";
 import DiscoveryPanel from "@/components/DiscoveryPanel";
 import WorldSidebar from "@/components/WorldSidebar";
 import { buildConstellationLayout } from "@/lib/layoutNodes";
@@ -43,12 +49,32 @@ import {
   getAllDescendantIds,
 } from "@/lib/worldLogic";
 import {
-  buildCanonTimeline,
+  buildCanonEvolutionTree,
   getCanonNodeTitle,
 } from "@/lib/canonLayout";
+import { buildCanonProfile, originJourneySubtitle } from "@/lib/canonProfile";
+import {
+  computeExtendedRipple,
+  buildFeedEntriesFromRipple,
+  describeTensions,
+  computeWorldState,
+  type ExtendedRippleResult,
+  type EvolutionFeedEntry,
+  type EvolutionEventDef,
+} from "@/lib/worldEvolution";
+import { getDynamicFutures } from "@/lib/worldState";
+import {
+  buildRippleStateMap,
+  type RippleState,
+} from "@/lib/worldRipple";
 import { getAgentVoice } from "@/lib/agentVoices";
 import { getAgentReasoning } from "@/lib/agentReasoning";
 import { resolveNodeMeta, resolvePanelItem } from "@/lib/worldNodes";
+import {
+  computeFutureYPositions,
+  labelPriority,
+  resolveLabelOffsets,
+} from "@/lib/graphLayout";
 import type {
   DiscoveryAction,
   DiscoveryDecision,
@@ -61,10 +87,18 @@ const EMERGE_GLOW_MS = 800;
 const FIT_DELAY_MS = 80;
 const FIT_DURATION_MS = 600;
 
+const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+
+function nearestZoomLevel(zoom: number): number {
+  return ZOOM_LEVELS.reduce((best, z) =>
+    Math.abs(z - zoom) < Math.abs(best - zoom) ? z : best,
+  );
+}
+
 // Trail (discovery-mode) layout — PAST ← CURRENT → FUTURE
-const PAST_STEP_X = 200;
-const FUTURE_X = 280;
-const FUTURE_ROW_H = 95;
+const PAST_STEP_X = 165;
+const FUTURE_X = 185;
+const FUTURE_ROW_H = 72;
 
 // Canon tree layout constants (vertical glowing paths)
 const CANON_PATH_EDGE = {
@@ -110,6 +144,52 @@ const nodeTypes = {
 
 type ConstellationCanvasProps = { worldSeed: string };
 
+function applyLabelOffsets(
+  nodes: Node[],
+  selectedId: string | null,
+): Node[] {
+  const entries = nodes
+    .filter((n) => n.type === "trailNode")
+    .map((n) => {
+      const data = n.data as TrailNodeData;
+      const collisionId = data.nodeId ?? n.id;
+      return {
+        id: n.id,
+        x: n.position.x,
+        y: n.position.y,
+        priority: labelPriority(
+          data.journeyPhase,
+          data.role,
+          collisionId === selectedId || n.id === selectedId,
+        ),
+      };
+    });
+
+  if (entries.length === 0) return nodes;
+
+  const offsets = resolveLabelOffsets(entries);
+  return nodes.map((n) => {
+    const offset = offsets[n.id];
+    if (offset === undefined) return n;
+    return {
+      ...n,
+      data: { ...(n.data as TrailNodeData), labelOffsetY: offset },
+    };
+  });
+}
+
+function injectRippleStates(
+  nodes: Node[],
+  rippleStates: Record<string, RippleState>,
+): Node[] {
+  if (Object.keys(rippleStates).length === 0) return nodes;
+  return nodes.map((n) => {
+    const state = rippleStates[n.id] ?? rippleStates[(n.data as TrailNodeData).nodeId ?? ""];
+    if (!state) return n;
+    return { ...n, data: { ...(n.data as TrailNodeData), rippleState: state } };
+  });
+}
+
 /** Collect all descendant IDs from WORLD_GRAPH (recursive). */
 function getWorldDescendantIds(id: string): string[] {
   const result: string[] = [];
@@ -140,6 +220,14 @@ export default function ConstellationCanvas({
   const [latestShift, setLatestShift] = useState<WorldShift | null>(null);
   const [pulseNonce, setPulseNonce] = useState(0);
   const [creatorDirections, setCreatorDirections] = useState<Record<string, string>>({});
+  const [synthesisOpen, setSynthesisOpen] = useState(false);
+  const [zoomPct, setZoomPct] = useState(100);
+  const [rippleStates, setRippleStates] = useState<Record<string, RippleState>>({});
+  const [rippleModal, setRippleModal] = useState<ExtendedRippleResult | null>(null);
+  const [triggeredEvolutionIds, setTriggeredEvolutionIds] = useState<string[]>([]);
+  const [evolutionFeed, setEvolutionFeed] = useState<EvolutionFeedEntry[]>([]);
+  const [pendingEvolution, setPendingEvolution] = useState<EvolutionEventDef | null>(null);
+  const [evolutionQueue, setEvolutionQueue] = useState<EvolutionEventDef[]>([]);
 
   const handleAddTruth = useCallback((truth: string) => {
     setCreatorTruths((prev) => [...prev, truth]);
@@ -148,6 +236,44 @@ export default function ConstellationCanvas({
   }, []);
 
   const rfInstance = useRef<ReactFlowInstance | null>(null);
+
+  const panelInset = selectedItem ? 320 : 0;
+
+  const handleViewportChange = useCallback((viewport: { zoom: number }) => {
+    setZoomPct(Math.round(viewport.zoom * 100));
+  }, []);
+
+  const setZoomLevel = useCallback((level: number) => {
+    const inst = rfInstance.current;
+    if (!inst) return;
+    inst.zoomTo(level, { duration: 180 });
+    setZoomPct(Math.round(level * 100));
+  }, []);
+
+  const handleZoomIn = useCallback(() => {
+    const inst = rfInstance.current;
+    if (!inst) return;
+    const current = nearestZoomLevel(inst.getZoom());
+    const idx = ZOOM_LEVELS.indexOf(current as (typeof ZOOM_LEVELS)[number]);
+    setZoomLevel(ZOOM_LEVELS[Math.min(ZOOM_LEVELS.length - 1, idx + 1)]);
+  }, [setZoomLevel]);
+
+  const handleZoomOut = useCallback(() => {
+    const inst = rfInstance.current;
+    if (!inst) return;
+    const current = nearestZoomLevel(inst.getZoom());
+    const idx = ZOOM_LEVELS.indexOf(current as (typeof ZOOM_LEVELS)[number]);
+    setZoomLevel(ZOOM_LEVELS[Math.max(0, idx - 1)]);
+  }, [setZoomLevel]);
+
+  const handleZoomReset = useCallback(() => setZoomLevel(1), [setZoomLevel]);
+
+  const selectedNodeId = useMemo(() => {
+    if (!selectedItem) return null;
+    return selectedItem.kind === "discovery"
+      ? selectedItem.discovery.id
+      : selectedItem.consequence.id;
+  }, [selectedItem]);
 
   const baseLayout = useMemo(
     () => buildConstellationLayout(worldSeed, MOCK_DISCOVERIES),
@@ -236,12 +362,11 @@ export default function ConstellationCanvas({
       ...dirIds.map((id) => ({ id, kind: "direction" as const })),
       ...consIds.map((id) => ({ id, kind: "consequence" as const })),
     ];
-    const fn = futureIds.length;
+    const yPositions = computeFutureYPositions(futureIds.length, FUTURE_ROW_H);
 
     futureIds.forEach((item, j) => {
       const { id, kind } = item;
-      const y =
-        fn === 1 ? 0 : (j - (fn - 1) / 2) * FUTURE_ROW_H;
+      const y = yPositions[j] ?? 0;
       const meta = resolveNodeMeta(id);
 
       nodes.push({
@@ -274,82 +399,142 @@ export default function ConstellationCanvas({
     return { nodes, edges };
   }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds]);
 
-  // ── Canon layout: compact vertical civilization timeline ─────────────────────
+  // ── Canon layout: living evolution tree ─────────────────────────────────────
+  const worldState = useMemo(
+    () => computeWorldState(acceptedIds),
+    [acceptedIds],
+  );
+
+  const worldTensions = useMemo(
+    () => describeTensions(worldState),
+    [worldState],
+  );
+
+  const dynamicFutures = useMemo(
+    () => getDynamicFutures(worldState),
+    [worldState],
+  );
+
+  const canonProfile = useMemo(
+    () => buildCanonProfile(acceptedIds, worldSeed, decisions, hiddenIds),
+    [acceptedIds, worldSeed, decisions, hiddenIds],
+  );
+
   const canonLayout = useMemo(() => {
     if (navState.mode !== "canon") {
       return { nodes: [] as Node[], edges: [] as Edge[] };
     }
 
-    const timeline = buildCanonTimeline(acceptedIds, worldSeed);
-    if (!timeline) {
+    const loreTree = buildCanonEvolutionTree(
+      acceptedIds,
+      worldSeed,
+      canonProfile.themes,
+      triggeredEvolutionIds,
+      dynamicFutures,
+    );
+    if (!loreTree) {
       return { nodes: [] as Node[], edges: [] as Edge[] };
     }
 
     const nodes: Node[] = [];
     const edges: Edge[] = [];
-    const seedFlowId = "canon-seed";
 
     nodes.push({
-      id: seedFlowId,
+      id: loreTree.seedFlowId,
       type: "trailNode",
-      position: timeline.seedPosition,
+      position: loreTree.seedPosition,
       data: {
         title: worldSeed,
         category: "Origin",
         role: "focused",
         decision: "pending",
         isCanonPath: true,
+        canonLayer: "origin",
       } satisfies TrailNodeData,
       draggable: false,
       selectable: false,
       zIndex: 10,
     });
 
-    for (const route of timeline.routes) {
-      route.nodeIds.forEach((id, i) => {
-        const flowId = `canon-${route.columnIndex}::${id}`;
-        const title = getCanonNodeTitle(id, worldSeed);
+    for (const entry of loreTree.nodes) {
+      const isVirtual =
+        entry.canonLayer === "emerging_theme" ||
+        entry.canonLayer === "world_evolution" ||
+        entry.canonLayer === "potential_future";
 
-        nodes.push({
-          id: flowId,
-          type: "trailNode",
-          position: route.positions[id] ?? { x: 0, y: 0 },
-          data: {
-            title,
-            category: "Established Truth",
-            role: "path",
-            decision: "accepted",
-            isCanonPath: true,
-            justAccepted: id === justAcceptedId,
-          } satisfies TrailNodeData,
-          draggable: false,
-          selectable: true,
-          zIndex: 6,
-        });
+      const title = isVirtual
+        ? (entry.sectionLabel ?? entry.id)
+        : getCanonNodeTitle(entry.id, worldSeed);
 
-        const prevFlowId =
-          i === 0 ? seedFlowId : `canon-${route.columnIndex}::${route.nodeIds[i - 1]}`;
+      const category =
+        entry.canonLayer === "major_truth"
+          ? "Major Truth"
+          : entry.canonLayer === "emerging_theme"
+            ? "Emerging Theme"
+            : entry.canonLayer === "world_evolution"
+              ? "World Evolution"
+              : entry.canonLayer === "potential_future"
+                ? "Potential Future"
+                : "Established Truth";
 
-        edges.push({
-          id: `canon-edge-${prevFlowId}-${flowId}`,
-          source: prevFlowId,
-          target: flowId,
-          animated: true,
-          style: CANON_PATH_EDGE,
-          markerEnd: CANON_PATH_MARKER,
-        });
+      nodes.push({
+        id: entry.flowId,
+        type: "trailNode",
+        position: entry.position,
+        data: {
+          title,
+          category,
+          role: entry.canonLayer === "major_truth" ? "focused" : "path",
+          decision: entry.canonLayer === "potential_future" ? "pending" : "accepted",
+          isCanonPath: true,
+          justAccepted: entry.id === justAcceptedId,
+          nodeId: isVirtual ? undefined : entry.id,
+          canonLayer: entry.canonLayer,
+        } satisfies TrailNodeData,
+        draggable: false,
+        selectable: !isVirtual,
+        zIndex: entry.canonLayer === "major_truth" ? 8 : 6,
       });
+
+      if (entry.parentFlowId) {
+        edges.push({
+          id: `lore-edge-${entry.parentFlowId}-${entry.flowId}`,
+          source: entry.parentFlowId,
+          target: entry.flowId,
+          animated: entry.canonLayer !== "potential_future",
+          style:
+            entry.canonLayer === "potential_future"
+              ? { stroke: "rgba(148, 163, 184, 0.3)", strokeWidth: 1, strokeDasharray: "4 4" }
+              : entry.canonLayer === "world_evolution"
+                ? { stroke: "rgba(251, 191, 36, 0.65)", strokeWidth: 2.5 }
+                : CANON_PATH_EDGE,
+          markerEnd: entry.canonLayer === "potential_future" ? undefined : CANON_PATH_MARKER,
+        });
+      }
     }
 
     return { nodes, edges };
-  }, [navState.mode, acceptedIds, worldSeed, justAcceptedId]);
+  }, [
+    navState.mode,
+    acceptedIds,
+    worldSeed,
+    justAcceptedId,
+    canonProfile.themes,
+    triggeredEvolutionIds,
+    dynamicFutures,
+  ]);
 
   // ── Nodes ─────────────────────────────────────────────────────────────────
   const nodes = useMemo(() => {
     const { mode } = navState;
 
-    if (mode === "discovery") return trailLayout.nodes;
-    if (mode === "canon") return canonLayout.nodes;
+    if (mode === "discovery") {
+      const base = applyLabelOffsets(trailLayout.nodes, selectedNodeId);
+      return injectRippleStates(base, rippleStates);
+    }
+    if (mode === "canon") {
+      return applyLabelOffsets(canonLayout.nodes, selectedNodeId);
+    }
 
     return baseLayout.nodes.map((node) => {
       if (node.type === "constellationRegion") {
@@ -413,6 +598,8 @@ export default function ConstellationCanvas({
     revealedIds,
     justRevealedId,
     justAcceptedId,
+    selectedNodeId,
+    rippleStates,
   ]);
 
   // ── Edges ─────────────────────────────────────────────────────────────────
@@ -505,9 +692,7 @@ export default function ConstellationCanvas({
       // Canon mode: clicking a node selects it for the panel
       if (mode === "canon" && node.type === "trailNode") {
         if (node.id === "canon-seed") return;
-        const rawId = node.id.includes("::")
-          ? node.id.split("::")[1]
-          : node.id;
+        const rawId = (node.data as TrailNodeData).nodeId ?? node.id;
         const item = resolvePanelItem(rawId);
         if (item) setSelectedItem(item);
         return;
@@ -595,7 +780,40 @@ export default function ConstellationCanvas({
       setDecisions((prev) => ({ ...prev, [id]: decision }));
 
       if (action === "accept") {
-        setAcceptedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+        const nodeTitle = resolveNodeMeta(id)?.title ?? id;
+        const prevAccepted = acceptedIds;
+        const nextAccepted = prevAccepted.includes(id)
+          ? prevAccepted
+          : [...prevAccepted, id];
+
+        const triggeredSet = new Set(triggeredEvolutionIds);
+        const result = computeExtendedRipple(
+          id,
+          nodeTitle,
+          prevAccepted,
+          nextAccepted,
+          triggeredSet,
+        );
+
+        setAcceptedIds(nextAccepted);
+
+        const stateMap = buildRippleStateMap(result, id);
+        setRippleStates(stateMap);
+
+        const ts = Date.now();
+        const feedEntries = buildFeedEntriesFromRipple(result, id, ts);
+        setEvolutionFeed((prev) => [...prev, ...feedEntries]);
+
+        if (result.newEvolutions.length > 0) {
+          const newIds = result.newEvolutions.map((ev) => ev.id);
+          setTriggeredEvolutionIds((prev) => [...prev, ...newIds]);
+          setEvolutionQueue(result.newEvolutions);
+          setPendingEvolution(result.newEvolutions[0]);
+        }
+
+        window.setTimeout(() => setRippleModal(result), 550);
+        window.setTimeout(() => setRippleStates({}), 2800);
+
         setJustAcceptedId(id);
 
         const consequences = ACCEPT_CONSEQUENCES[id] ?? [];
@@ -650,8 +868,16 @@ export default function ConstellationCanvas({
         }
       }
     },
-    [selectedItem, acceptedIds, navState],
+    [selectedItem, acceptedIds, navState, triggeredEvolutionIds],
   );
+
+  const handleEvolutionClose = useCallback(() => {
+    setEvolutionQueue((queue) => {
+      const [, ...rest] = queue;
+      setPendingEvolution(rest[0] ?? null);
+      return rest;
+    });
+  }, []);
 
   const selectedDecision = useMemo((): DiscoveryDecision => {
     if (!selectedItem) return "pending";
@@ -663,13 +889,6 @@ export default function ConstellationCanvas({
   }, [selectedItem, decisions]);
 
   const activeTrail = navState.mode === "discovery" ? navState.trail : [];
-
-  const selectedNodeId = useMemo(() => {
-    if (!selectedItem) return null;
-    return selectedItem.kind === "discovery"
-      ? selectedItem.discovery.id
-      : selectedItem.consequence.id;
-  }, [selectedItem]);
 
   const handleSetDirection = useCallback(
     (direction: string) => {
@@ -695,11 +914,26 @@ export default function ConstellationCanvas({
 
   const journeySteps = useMemo(() => {
     if (navState.mode !== "discovery") return [];
-    return navState.trail.map((id) => ({
+    const steps = navState.trail.map((id, i, arr) => ({
       id,
       title: resolveNodeMeta(id)?.title ?? id,
+      role: (i === arr.length - 1 ? "current" : "step") as "step" | "current",
     }));
-  }, [navState]);
+    return [
+      {
+        id: "__world-seed__",
+        title: worldSeed,
+        subtitle: originJourneySubtitle(worldSeed),
+        role: "origin" as const,
+      },
+      ...steps,
+    ];
+  }, [navState, worldSeed]);
+
+  const potentialConsequences = useMemo(() => {
+    if (!selectedNodeId) return [];
+    return (ACCEPT_CONSEQUENCES[selectedNodeId] ?? []).map((c) => c.title);
+  }, [selectedNodeId]);
 
   return (
     <div className="relative h-screen w-screen bg-[#0a0a0f]">
@@ -718,22 +952,58 @@ export default function ConstellationCanvas({
           style={{ left: "176px", right: "320px", top: "44px" }}
         >
           <div className="flex flex-1 justify-center">
-            <span className="text-[9px] uppercase tracking-[0.2em] text-slate-600/80">
+            <span className="rounded-full border border-slate-600/50 bg-slate-900/50 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400 shadow-[0_0_10px_rgba(100,116,139,0.1)]">
               Past
             </span>
           </div>
           <div className="flex flex-1 justify-center">
-            <span className="text-[9px] uppercase tracking-[0.2em] text-violet-400/70">
+            <span className="rounded-full border border-violet-500/50 bg-violet-950/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-violet-200 shadow-[0_0_24px_rgba(167,139,250,0.25)]">
               Current
             </span>
           </div>
           <div className="flex flex-1 justify-center">
-            <span className="text-[9px] uppercase tracking-[0.2em] text-slate-500/80">
+            <span className="rounded-full border border-slate-500/50 bg-slate-800/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-200 shadow-[0_0_16px_rgba(148,163,184,0.15)]">
               Future
             </span>
           </div>
         </div>
       )}
+      {navState.mode === "canon" && (
+        <CanonUniverseOverlay
+          profile={canonProfile}
+          hasTruths={acceptedIds.length > 0}
+          worldTensions={worldTensions}
+          evolutionFeed={evolutionFeed}
+          onBuildWorld={() => setSynthesisOpen(true)}
+        />
+      )}
+      <WorldSynthesisModal
+        open={synthesisOpen}
+        onClose={() => setSynthesisOpen(false)}
+        worldSeed={worldSeed}
+        profile={canonProfile}
+        acceptedIds={acceptedIds}
+        potentialFutures={dynamicFutures}
+      />
+      {rippleModal && (
+        <RippleModal
+          result={rippleModal}
+          onClose={() => setRippleModal(null)}
+        />
+      )}
+      {pendingEvolution && (
+        <EvolutionEventModal
+          event={pendingEvolution}
+          onClose={handleEvolutionClose}
+        />
+      )}
+      <ZoomControlsBar
+        zoomPct={zoomPct}
+        onZoomIn={handleZoomIn}
+        onZoomOut={handleZoomOut}
+        onReset={handleZoomReset}
+        panelInset={panelInset}
+      />
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -742,14 +1012,26 @@ export default function ConstellationCanvas({
         onPaneClick={onPaneClick}
         onInit={(instance) => {
           rfInstance.current = instance;
+          setZoomPct(Math.round(instance.getZoom() * 100));
         }}
+        onViewportChange={handleViewportChange}
         fitView
         fitViewOptions={{ padding: 0.28, includeHiddenNodes: false }}
-        minZoom={0.2}
-        maxZoom={2.5}
+        minZoom={0.5}
+        maxZoom={2}
+        panOnDrag
+        panOnScroll={false}
+        zoomOnScroll
+        zoomOnPinch
+        onlyRenderVisibleElements
         proOptions={{ hideAttribution: true }}
         className="bg-[#0a0a0f]"
-      />
+      >
+        <GraphMinimap
+          nodes={nodes}
+          panelInset={panelInset}
+        />
+      </ReactFlow>
       {selectedItem && (
         <DiscoveryPanel
           key={selectedNodeId ?? "panel"}
@@ -765,6 +1047,7 @@ export default function ConstellationCanvas({
           agentVoice={agentVoice}
           agentReasoning={agentReasoning}
           journeySteps={journeySteps}
+          potentialConsequences={potentialConsequences}
         />
       )}
     </div>
