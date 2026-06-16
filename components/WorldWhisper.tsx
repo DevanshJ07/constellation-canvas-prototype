@@ -11,9 +11,13 @@ const EXAMPLES = [
 
 type WorldWhisperProps = {
   onSubmit: (truth: string) => void;
+  emphasized?: boolean;
 };
 
-export default function WorldWhisper({ onSubmit }: WorldWhisperProps) {
+export default function WorldWhisper({
+  onSubmit,
+  emphasized = false,
+}: WorldWhisperProps) {
   const [value, setValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -35,17 +39,37 @@ export default function WorldWhisper({ onSubmit }: WorldWhisperProps) {
   }
 
   return (
-    <div className="absolute bottom-6 z-20 w-72 rounded-xl border border-slate-800/70 bg-slate-950/92 shadow-[0_4px_32px_rgba(0,0,0,0.5)] backdrop-blur-md"
+    <div
+      className={`absolute bottom-6 z-20 w-80 rounded-xl border backdrop-blur-md ${
+        emphasized
+          ? "border-violet-500/55 bg-slate-900/98 shadow-[0_0_48px_rgba(167,139,250,0.22),0_0_0_1px_rgba(167,139,250,0.12),0_12px_48px_rgba(0,0,0,0.6)] ring-1 ring-violet-400/15"
+          : "border-violet-700/45 bg-slate-950/96 shadow-[0_0_32px_rgba(167,139,250,0.14),0_8px_40px_rgba(0,0,0,0.55)]"
+      }`}
       style={{ left: "calc(176px + 16px)" }}
     >
-      {/* Header */}
-      <div className="border-b border-slate-800/60 px-4 py-3">
-        <p className="text-[9px] font-semibold uppercase tracking-[0.28em] text-slate-500">
+      <div
+        className={`border-b px-4 py-3 ${
+          emphasized
+            ? "border-violet-600/40 bg-violet-950/40"
+            : "border-violet-800/35 bg-violet-950/28"
+        }`}
+      >
+        <p
+          className={`text-[10px] font-semibold uppercase tracking-[0.26em] ${
+            emphasized ? "text-violet-100" : "text-violet-200/95"
+          }`}
+        >
           World Whisper
+        </p>
+        <p
+          className={`mt-0.5 text-[11px] ${
+            emphasized ? "text-slate-300" : "text-slate-400"
+          }`}
+        >
+          Tell the world something
         </p>
       </div>
 
-      {/* Input row */}
       <div className="flex items-center gap-2 px-3 py-3">
         <input
           ref={inputRef}
@@ -54,33 +78,43 @@ export default function WorldWhisper({ onSubmit }: WorldWhisperProps) {
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Tell the world something..."
-          className="flex-1 bg-transparent text-sm text-slate-200 placeholder-slate-600 outline-none"
+          className={`flex-1 bg-transparent text-sm outline-none ${
+            emphasized
+              ? "text-slate-50 placeholder-slate-400"
+              : "text-slate-100 placeholder-slate-500"
+          }`}
         />
         <button
           type="button"
           onClick={handleSubmit}
           disabled={!value.trim()}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-slate-700 text-slate-500 transition hover:border-emerald-700/60 hover:text-emerald-400 disabled:cursor-default disabled:opacity-30"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-emerald-600/55 bg-emerald-950/50 text-emerald-300 transition hover:border-emerald-400/65 hover:bg-emerald-950/70 disabled:cursor-default disabled:opacity-30"
           aria-label="Submit truth"
         >
           <span className="text-xs leading-none">↵</span>
         </button>
       </div>
 
-      {/* Example chips */}
-      <div className="border-t border-slate-800/50 px-3 py-2.5">
-        <div className="flex flex-col gap-1">
+      <div className="border-t border-slate-600/45 px-3 py-2.5">
+        <p className="mb-1.5 text-[9px] uppercase tracking-wider text-slate-400">
+          Examples
+        </p>
+        <div className="flex flex-col gap-1.5">
           {EXAMPLES.map((example) => (
             <button
               key={example}
               type="button"
               onClick={() => handleExampleClick(example)}
-              className="group flex items-start gap-1.5 text-left"
+              className="group flex items-start gap-2 text-left"
             >
-              <span className="mt-0.5 shrink-0 text-[10px] text-slate-700 transition group-hover:text-slate-500">
+              <span className="mt-0.5 shrink-0 text-[10px] text-violet-400/70 transition group-hover:text-violet-300">
                 ·
               </span>
-              <span className="text-[11px] leading-snug text-slate-600 transition group-hover:text-slate-400">
+              <span
+                className={`text-[11px] leading-snug transition group-hover:text-slate-100 ${
+                  emphasized ? "text-slate-300" : "text-slate-400"
+                }`}
+              >
                 {example}
               </span>
             </button>

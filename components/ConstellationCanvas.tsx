@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
-  MarkerType,
   type Edge,
   type Node,
   type ReactFlowInstance,
@@ -27,6 +26,7 @@ import TrailNode, { type TrailNodeData } from "@/components/TrailNode";
 import GraphMinimap from "@/components/GraphMinimap";
 import ZoomControlsBar from "@/components/ZoomControlsBar";
 import CanonUniverseOverlay from "@/components/CanonUniverseOverlay";
+import CanonThreadsPanel from "@/components/CanonThreadsPanel";
 import WorldSynthesisModal from "@/components/WorldSynthesisModal";
 import EvolutionEventModal from "@/components/EvolutionEventModal";
 import RippleModal from "@/components/RippleModal";
@@ -48,10 +48,11 @@ import {
   ACCEPT_CONSEQUENCES,
   getAllDescendantIds,
 } from "@/lib/worldLogic";
+import { buildCanonStructure } from "@/lib/canonStructure";
+import { buildCanonThreads } from "@/lib/canonFlow";
 import {
-  buildCanonEvolutionTree,
-  getCanonNodeTitle,
-} from "@/lib/canonLayout";
+  buildCanonEvolutionTimeline,
+} from "@/lib/canonEvolutionNarrative";
 import { buildCanonProfile, originJourneySubtitle } from "@/lib/canonProfile";
 import {
   computeExtendedRipple,
@@ -99,19 +100,6 @@ function nearestZoomLevel(zoom: number): number {
 const PAST_STEP_X = 165;
 const FUTURE_X = 185;
 const FUTURE_ROW_H = 72;
-
-// Canon tree layout constants (vertical glowing paths)
-const CANON_PATH_EDGE = {
-  stroke: "rgba(167, 139, 250, 0.8)",
-  strokeWidth: 2.5,
-} as const;
-
-const CANON_PATH_MARKER = {
-  type: MarkerType.ArrowClosed,
-  width: 14,
-  height: 14,
-  color: "rgba(167, 139, 250, 0.85)",
-} as const;
 
 const CONSEQUENCE_EDGE_STYLE = {
   stroke: "rgba(45, 212, 191, 0.55)",
@@ -420,120 +408,45 @@ export default function ConstellationCanvas({
     [acceptedIds, worldSeed, decisions, hiddenIds],
   );
 
-  const canonLayout = useMemo(() => {
-    if (navState.mode !== "canon") {
-      return { nodes: [] as Node[], edges: [] as Edge[] };
-    }
-
-    const loreTree = buildCanonEvolutionTree(
+  const canonStructure = useMemo(
+    () =>
+      buildCanonStructure(
+        acceptedIds,
+        worldSeed,
+        worldTensions,
+        dynamicFutures,
+        canonProfile.coherenceScore,
+      ),
+    [
       acceptedIds,
       worldSeed,
-      canonProfile.themes,
-      triggeredEvolutionIds,
+      worldTensions,
       dynamicFutures,
-    );
-    if (!loreTree) {
-      return { nodes: [] as Node[], edges: [] as Edge[] };
-    }
+      canonProfile.coherenceScore,
+    ],
+  );
 
-    const nodes: Node[] = [];
-    const edges: Edge[] = [];
+  const evolutionNarratives = useMemo(
+    () => buildCanonEvolutionTimeline(acceptedIds, evolutionFeed),
+    [acceptedIds, evolutionFeed],
+  );
 
-    nodes.push({
-      id: loreTree.seedFlowId,
-      type: "trailNode",
-      position: loreTree.seedPosition,
-      data: {
-        title: worldSeed,
-        category: "Origin",
-        role: "focused",
-        decision: "pending",
-        isCanonPath: true,
-        canonLayer: "origin",
-      } satisfies TrailNodeData,
-      draggable: false,
-      selectable: false,
-      zIndex: 10,
-    });
-
-    for (const entry of loreTree.nodes) {
-      const isVirtual =
-        entry.canonLayer === "emerging_theme" ||
-        entry.canonLayer === "world_evolution" ||
-        entry.canonLayer === "potential_future";
-
-      const title = isVirtual
-        ? (entry.sectionLabel ?? entry.id)
-        : getCanonNodeTitle(entry.id, worldSeed);
-
-      const category =
-        entry.canonLayer === "major_truth"
-          ? "Major Truth"
-          : entry.canonLayer === "emerging_theme"
-            ? "Emerging Theme"
-            : entry.canonLayer === "world_evolution"
-              ? "World Evolution"
-              : entry.canonLayer === "potential_future"
-                ? "Potential Future"
-                : "Established Truth";
-
-      nodes.push({
-        id: entry.flowId,
-        type: "trailNode",
-        position: entry.position,
-        data: {
-          title,
-          category,
-          role: entry.canonLayer === "major_truth" ? "focused" : "path",
-          decision: entry.canonLayer === "potential_future" ? "pending" : "accepted",
-          isCanonPath: true,
-          justAccepted: entry.id === justAcceptedId,
-          nodeId: isVirtual ? undefined : entry.id,
-          canonLayer: entry.canonLayer,
-        } satisfies TrailNodeData,
-        draggable: false,
-        selectable: !isVirtual,
-        zIndex: entry.canonLayer === "major_truth" ? 8 : 6,
-      });
-
-      if (entry.parentFlowId) {
-        edges.push({
-          id: `lore-edge-${entry.parentFlowId}-${entry.flowId}`,
-          source: entry.parentFlowId,
-          target: entry.flowId,
-          animated: entry.canonLayer !== "potential_future",
-          style:
-            entry.canonLayer === "potential_future"
-              ? { stroke: "rgba(148, 163, 184, 0.3)", strokeWidth: 1, strokeDasharray: "4 4" }
-              : entry.canonLayer === "world_evolution"
-                ? { stroke: "rgba(251, 191, 36, 0.65)", strokeWidth: 2.5 }
-                : CANON_PATH_EDGE,
-          markerEnd: entry.canonLayer === "potential_future" ? undefined : CANON_PATH_MARKER,
-        });
-      }
-    }
-
-    return { nodes, edges };
-  }, [
-    navState.mode,
-    acceptedIds,
-    worldSeed,
-    justAcceptedId,
-    canonProfile.themes,
-    triggeredEvolutionIds,
-    dynamicFutures,
-  ]);
+  const canonThreads = useMemo(
+    () => buildCanonThreads(acceptedIds),
+    [acceptedIds],
+  );
 
   // ── Nodes ─────────────────────────────────────────────────────────────────
   const nodes = useMemo(() => {
     const { mode } = navState;
 
+    if (mode === "canon") {
+      return [];
+    }
+
     if (mode === "discovery") {
       const base = applyLabelOffsets(trailLayout.nodes, selectedNodeId);
       return injectRippleStates(base, rippleStates);
-    }
-    if (mode === "canon") {
-      return applyLabelOffsets(canonLayout.nodes, selectedNodeId);
     }
 
     return baseLayout.nodes.map((node) => {
@@ -592,7 +505,6 @@ export default function ConstellationCanvas({
   }, [
     navState,
     trailLayout.nodes,
-    canonLayout.nodes,
     baseLayout.nodes,
     decisions,
     revealedIds,
@@ -607,9 +519,9 @@ export default function ConstellationCanvas({
     const { mode } = navState;
 
     if (mode === "discovery") return trailLayout.edges;
-    if (mode === "canon") return canonLayout.edges;
+    if (mode === "canon") return [];
     return [];
-  }, [navState, trailLayout.edges, canonLayout.edges]);
+  }, [navState, trailLayout.edges]);
 
   // Directions + unlocked consequences for the side panel
   const panelDirections = useMemo(() => {
@@ -935,6 +847,11 @@ export default function ConstellationCanvas({
     return (ACCEPT_CONSEQUENCES[selectedNodeId] ?? []).map((c) => c.title);
   }, [selectedNodeId]);
 
+  const handleCanonNodeSelect = useCallback((nodeId: string) => {
+    const item = resolvePanelItem(nodeId);
+    if (item) setSelectedItem(item);
+  }, []);
+
   return (
     <div className="relative h-screen w-screen bg-[#0a0a0f]">
       <WorldSidebar
@@ -945,7 +862,10 @@ export default function ConstellationCanvas({
       />
       <Breadcrumb navState={navState} onNavigate={handleNavigate} />
       <WorldPulse shift={latestShift} nonce={pulseNonce} />
-      <WorldWhisper onSubmit={handleAddTruth} />
+      <WorldWhisper
+        onSubmit={handleAddTruth}
+        emphasized={navState.mode === "overview"}
+      />
       {navState.mode === "discovery" && (
         <div
           className="pointer-events-none absolute z-10 flex items-center justify-center gap-0"
@@ -969,13 +889,20 @@ export default function ConstellationCanvas({
         </div>
       )}
       {navState.mode === "canon" && (
-        <CanonUniverseOverlay
-          profile={canonProfile}
-          hasTruths={acceptedIds.length > 0}
-          worldTensions={worldTensions}
-          evolutionFeed={evolutionFeed}
-          onBuildWorld={() => setSynthesisOpen(true)}
-        />
+        <>
+          <CanonUniverseOverlay
+            profile={canonProfile}
+            structure={canonStructure}
+            evolutionNarratives={evolutionNarratives}
+            hasTruths={acceptedIds.length > 0}
+            onBuildWorld={() => setSynthesisOpen(true)}
+            onSelectNode={handleCanonNodeSelect}
+          />
+          <CanonThreadsPanel
+            threads={canonThreads}
+            onSelectNode={handleCanonNodeSelect}
+          />
+        </>
       )}
       <WorldSynthesisModal
         open={synthesisOpen}
@@ -997,6 +924,7 @@ export default function ConstellationCanvas({
           onClose={handleEvolutionClose}
         />
       )}
+      {navState.mode !== "canon" && (
       <ZoomControlsBar
         zoomPct={zoomPct}
         onZoomIn={handleZoomIn}
@@ -1004,6 +932,12 @@ export default function ConstellationCanvas({
         onReset={handleZoomReset}
         panelInset={panelInset}
       />
+      )}
+      {navState.mode !== "canon" && (
+      <div
+        className="absolute inset-y-0 right-0"
+        style={{ left: "176px" }}
+      >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -1032,6 +966,14 @@ export default function ConstellationCanvas({
           panelInset={panelInset}
         />
       </ReactFlow>
+      </div>
+      )}
+      {navState.mode === "canon" && (
+        <div
+          className="absolute inset-y-0 right-0 bg-[#0a0a0f]"
+          style={{ left: "176px" }}
+        />
+      )}
       {selectedItem && (
         <DiscoveryPanel
           key={selectedNodeId ?? "panel"}

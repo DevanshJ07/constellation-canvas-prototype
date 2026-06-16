@@ -19,7 +19,7 @@ export type TrailNodeData = {
   journeyPhase?: "past" | "current" | "future";
   nodeId?: string;
   labelOffsetY?: number;
-  canonLayer?: "origin" | "theme" | "truth" | "consequence" | "major_truth" | "emerging_theme" | "world_evolution" | "potential_future";
+  canonLayer?: "origin" | "theme" | "truth" | "consequence" | "major_truth" | "emerging_theme" | "world_evolution" | "world_state" | "potential_future" | "domain_truth" | "unresolved";
   rippleState?: RippleState;
 };
 
@@ -95,14 +95,16 @@ function TrailNode({ data, selected }: NodeProps) {
                 ? "border-violet-300/80 bg-violet-500/18"
         : canonLayer === "theme"
           ? "border-amber-400/55 bg-amber-500/10"
-          : canonLayer === "major_truth"
-            ? "border-emerald-400/65 bg-emerald-500/12"
-            : canonLayer === "emerging_theme"
+          : canonLayer === "major_truth" || canonLayer === "domain_truth"
+            ? "border-[#5EE7A4]/70 bg-[#5EE7A4]/12"
+            : canonLayer === "world_state" || canonLayer === "world_evolution"
+              ? "border-[#FFC857]/70 bg-[#FFC857]/14"
+              : canonLayer === "unresolved"
+              ? "border-[#FF8A65]/65 bg-[#FF8A65]/12"
+              : canonLayer === "emerging_theme"
               ? "border-violet-400/50 bg-violet-500/10"
-              : canonLayer === "world_evolution"
-                ? "border-amber-400/60 bg-amber-500/12"
-                : canonLayer === "potential_future"
-                  ? "border-sky-400/45 bg-sky-500/8"
+              : canonLayer === "potential_future"
+                  ? "border-[#B78CFF]/65 bg-[#B78CFF]/12"
                   : isCanonPath
                     ? "border-violet-300/60 bg-violet-500/10"
                     : "border-slate-500/45 bg-slate-700/20";
@@ -213,9 +215,13 @@ function TrailNode({ data, selected }: NodeProps) {
           <p className="mt-0.5 text-[8px] font-medium uppercase tracking-[0.14em] text-slate-500">
             {canonLayer === "origin"
               ? "Origin"
-              : canonLayer === "major_truth"
-                ? "Major Truth"
-                : canonLayer === "emerging_theme"
+              : canonLayer === "major_truth" || canonLayer === "domain_truth"
+                ? "Established Truth"
+                : canonLayer === "unresolved"
+                  ? "Unresolved Thread"
+                  : canonLayer === "world_state"
+                    ? "World State"
+                    : canonLayer === "emerging_theme"
                   ? "Emerging Theme"
                   : canonLayer === "world_evolution"
                     ? "World Evolution"

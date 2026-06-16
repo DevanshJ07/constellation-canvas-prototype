@@ -1,21 +1,13 @@
-import { ACCEPT_CONSEQUENCES, CONSEQUENCE_BY_ID } from "@/lib/worldLogic";
-import { WORLD_NODES } from "@/lib/worldData";
-import { EVOLUTION_EVENTS, type EvolutionEventDef } from "@/lib/worldEvolution";
+import type { CanonStructure } from "@/lib/canonStructure";
 import { resolveNodeMeta } from "@/lib/worldNodes";
-
-export const CANON_WORLD_SEED_ID = "canon-world-seed";
-export const LORE_ROW_H = 88;
-export const SECTION_GAP = 56;
+import type { ConstellationRegionId } from "@/lib/regions";
 
 export type CanonLayer =
   | "origin"
-  | "major_truth"
-  | "emerging_theme"
-  | "world_evolution"
-  | "potential_future"
-  | "truth"
+  | "domain_truth"
   | "consequence"
-  | "theme";
+  | "potential_future"
+  | "unresolved";
 
 export type LoreTreeNode = {
   id: string;
@@ -24,182 +16,147 @@ export type LoreTreeNode = {
   parentFlowId: string | null;
   canonLayer: CanonLayer;
   sectionLabel?: string;
+  domainId?: ConstellationRegionId;
 };
 
 export type CanonLoreTree = {
   seedFlowId: string;
   seedPosition: { x: number; y: number };
   nodes: LoreTreeNode[];
-  sectionMarkers: { label: string; y: number }[];
 };
 
-function rowHeight(title: string, layer?: CanonLayer): number {
-  const lines = Math.max(1, Math.ceil(title.length / 14));
-  const base = layer === "emerging_theme" || layer === "potential_future" ? 64 : LORE_ROW_H;
-  return Math.max(base, 58 + (lines - 1) * 14);
-}
+const ROW_H = 72;
+const COL_GAP = 240;
+const SECTION_GAP = 48;
 
-function getTitle(id: string, worldSeed: string): string {
-  if (id === CANON_WORLD_SEED_ID) return worldSeed;
-  return WORLD_NODES[id]?.title ?? CONSEQUENCE_BY_ID[id]?.title ?? id;
-}
-
-/**
- * Living-system canon layout:
- * Origin → Major Truths → Emerging Themes → World Evolutions → Potential Futures
- */
-export function buildCanonEvolutionTree(
-  acceptedIds: string[],
-  worldSeedLabel: string,
-  themes: string[],
-  triggeredEvolutionIds: string[],
-  potentialFutures: string[],
+/** Structured canon graph — secondary visual aligned to bible sections. */
+export function buildCanonStructuredTree(
+  structure: CanonStructure,
 ): CanonLoreTree | null {
-  if (acceptedIds.length === 0) return null;
+  if (
+    structure.domains.length === 0 &&
+    structure.unresolvedThreads.length === 0 &&
+    structure.rippleConsequences.length === 0
+  ) {
+    return null;
+  }
 
   const seedFlowId = "canon-seed";
   const nodes: LoreTreeNode[] = [];
-  const sectionMarkers: { label: string; y: number }[] = [];
-  let yAcc = LORE_ROW_H;
-  let lastParentFlowId = seedFlowId;
+  let yAcc = ROW_H + 20;
 
-  // ── Major Truths (accepted, spread horizontally) ───────────────────────────
-  sectionMarkers.push({ label: "Major Truths", y: yAcc });
-  yAcc += 28;
+  const activeDomains = structure.domains;
+  const colCount = Math.max(activeDomains.length, 1);
+  const colOffset = ((colCount - 1) * COL_GAP) / 2;
 
-  const majorCount = acceptedIds.length;
-  const majorGap = Math.max(200, 180 + majorCount * 8);
-  const majorOffset = ((majorCount - 1) * majorGap) / 2;
+  activeDomains.forEach((domain, colIndex) => {
+    const colX = colIndex * COL_GAP - colOffset;
+    let colY = yAcc;
 
-  acceptedIds.forEach((nodeId, i) => {
-    const flowId = `major-${nodeId}`;
-    const title = getTitle(nodeId, worldSeedLabel);
-    nodes.push({
-      id: nodeId,
-      flowId,
-      position: { x: i * majorGap - majorOffset, y: yAcc },
-      parentFlowId: seedFlowId,
-      canonLayer: "major_truth",
+    domain.truths.forEach((truth, i) => {
+      nodes.push({
+        id: truth.id,
+        flowId: `domain-${domain.id}-${truth.id}`,
+        position: { x: colX, y: colY },
+        parentFlowId:
+          i === 0 ? seedFlowId : `domain-${domain.id}-${domain.truths[i - 1].id}`,
+        canonLayer: "domain_truth",
+        domainId: domain.id,
+      });
+      colY += ROW_H;
     });
-    lastParentFlowId = flowId;
   });
 
-  yAcc += rowHeight("Major Truth") + SECTION_GAP;
+  yAcc += ROW_H * 2 + SECTION_GAP;
 
-  // ── Emerging Themes ────────────────────────────────────────────────────────
-  if (themes.length > 0) {
-    sectionMarkers.push({ label: "Emerging Themes", y: yAcc });
-    yAcc += 28;
-
-    const themeCount = themes.length;
-    const themeGap = Math.max(180, 160 + themeCount * 10);
-    const themeOffset = ((themeCount - 1) * themeGap) / 2;
-
-    themes.forEach((theme, i) => {
-      const flowId = `theme-${i}`;
-      nodes.push({
-        id: flowId,
-        flowId,
-        position: { x: i * themeGap - themeOffset, y: yAcc },
-        parentFlowId: lastParentFlowId,
-        canonLayer: "emerging_theme",
-        sectionLabel: theme,
-      });
+  structure.unresolvedThreads.forEach((t, i) => {
+    nodes.push({
+      id: t.id,
+      flowId: `unresolved-${t.id}`,
+      position: { x: 0, y: yAcc + i * ROW_H },
+      parentFlowId: seedFlowId,
+      canonLayer: "unresolved",
     });
+  });
 
-    yAcc += rowHeight(themes[0] ?? "Theme", "emerging_theme") + SECTION_GAP;
-    lastParentFlowId = `theme-${themes.length - 1}`;
+  if (structure.unresolvedThreads.length > 0) {
+    yAcc += structure.unresolvedThreads.length * ROW_H + SECTION_GAP;
   }
 
-  // ── World Evolutions ───────────────────────────────────────────────────────
-  const triggeredEvents = EVOLUTION_EVENTS.filter((ev) =>
-    triggeredEvolutionIds.includes(ev.id),
-  );
-
-  if (triggeredEvents.length > 0) {
-    sectionMarkers.push({ label: "World Evolutions", y: yAcc });
-    yAcc += 28;
-
-    const evCount = triggeredEvents.length;
-    const evGap = Math.max(220, 200 + evCount * 12);
-    const evOffset = ((evCount - 1) * evGap) / 2;
-
-    triggeredEvents.forEach((ev, i) => {
-      const flowId = `evolution-${ev.id}`;
-      nodes.push({
-        id: ev.id,
-        flowId,
-        position: { x: i * evGap - evOffset, y: yAcc },
-        parentFlowId: lastParentFlowId,
-        canonLayer: "world_evolution",
-        sectionLabel: ev.title,
-      });
+  const consSlice = structure.rippleConsequences.slice(0, 6);
+  consSlice.forEach((c, i) => {
+    const gap = 180;
+    const offset = ((consSlice.length - 1) * gap) / 2;
+    nodes.push({
+      id: c.id,
+      flowId: `consequence-${c.id}`,
+      position: { x: i * gap - offset, y: yAcc },
+      parentFlowId: seedFlowId,
+      canonLayer: "consequence",
+      sectionLabel: c.causedBy,
     });
+  });
 
-    yAcc += rowHeight(triggeredEvents[0]?.title ?? "Evolution", "world_evolution") + SECTION_GAP;
-    lastParentFlowId = `evolution-${triggeredEvents[triggeredEvents.length - 1]?.id}`;
+  if (consSlice.length > 0) {
+    yAcc += ROW_H + SECTION_GAP;
   }
 
-  // ── Potential Futures ──────────────────────────────────────────────────────
-  if (potentialFutures.length > 0) {
-    sectionMarkers.push({ label: "Potential Futures", y: yAcc });
-    yAcc += 28;
-
-    const futCount = potentialFutures.length;
-    const futGap = Math.max(200, 180 + futCount * 10);
-    const futOffset = ((futCount - 1) * futGap) / 2;
-
-    potentialFutures.forEach((future, i) => {
-      const flowId = `future-${i}`;
-      nodes.push({
-        id: flowId,
-        flowId,
-        position: { x: i * futGap - futOffset, y: yAcc },
-        parentFlowId: lastParentFlowId,
-        canonLayer: "potential_future",
-        sectionLabel: future,
-      });
+  structure.potentialFutures.forEach((future, i) => {
+    const count = structure.potentialFutures.length;
+    const gap = 200;
+    const offset = ((count - 1) * gap) / 2;
+    nodes.push({
+      id: `future-${i}`,
+      flowId: `future-${i}`,
+      position: { x: i * gap - offset, y: yAcc },
+      parentFlowId: seedFlowId,
+      canonLayer: "potential_future",
+      sectionLabel: future,
     });
-  }
+  });
 
   return {
     seedFlowId,
     seedPosition: { x: 0, y: 0 },
     nodes,
-    sectionMarkers,
   };
 }
 
-/** @deprecated Use buildCanonEvolutionTree */
+export function getCanonNodeTitle(id: string, worldSeedLabel: string): string {
+  if (id.startsWith("future-")) return id;
+  return resolveNodeMeta(id)?.title ?? worldSeedLabel;
+}
+
 export function buildCanonLoreTree(
   acceptedIds: string[],
   worldSeedLabel: string,
 ): CanonLoreTree | null {
-  return buildCanonEvolutionTree(acceptedIds, worldSeedLabel, [], [], []);
+  return null;
 }
 
-export function getCanonNodeTitle(id: string, worldSeedLabel: string): string {
-  if (id.startsWith("theme-") || id.startsWith("future-") || id.startsWith("evolution-")) {
-    return id;
-  }
-  const meta = resolveNodeMeta(id);
-  if (meta) return meta.title;
-  return getTitle(id, worldSeedLabel);
+export function buildCanonEvolutionTree(
+  _acceptedIds: string[],
+  _worldSeedLabel: string,
+  _themes: string[],
+  _triggeredEvolutionIds: string[],
+  _potentialFutures: string[],
+): CanonLoreTree | null {
+  return null;
 }
 
 export function buildCanonTimeline(
   acceptedIds: string[],
   worldSeedLabel: string,
 ): { seedPosition: { x: number; y: number }; routes: unknown[] } | null {
-  const tree = buildCanonEvolutionTree(acceptedIds, worldSeedLabel, [], [], []);
+  const tree = buildCanonLoreTree(acceptedIds, worldSeedLabel);
   if (!tree) return null;
   return { seedPosition: tree.seedPosition, routes: [] };
 }
 
 export function resolveCanonLayer(_nodeId: string, _depth: number): CanonLayer {
-  return "truth";
+  return "domain_truth";
 }
 
-export function canonRowHeight(title: string, layer?: CanonLayer): number {
-  return rowHeight(title, layer);
+export function canonRowHeight(_title: string): number {
+  return ROW_H;
 }
