@@ -21,6 +21,9 @@ export type TrailNodeData = {
   labelOffsetY?: number;
   canonLayer?: "origin" | "theme" | "truth" | "consequence" | "major_truth" | "emerging_theme" | "world_evolution" | "world_state" | "potential_future" | "domain_truth" | "unresolved";
   rippleState?: RippleState;
+  aiGenerated?: boolean;
+  weakened?: boolean;
+  nodeModified?: boolean;
 };
 
 const SIZE: Record<TrailRole, number> = {
@@ -63,6 +66,9 @@ function TrailNode({ data, selected }: NodeProps) {
     labelOffsetY = 0,
     canonLayer,
     rippleState,
+    aiGenerated,
+    weakened,
+    nodeModified,
   } = data as TrailNodeData;
 
   const size = isCanonPath ? CANON_SIZE[role] : SIZE[role];
@@ -142,19 +148,21 @@ function TrailNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`group flex flex-col items-center gap-2 transition-all duration-300 ${
-        isPast
-          ? "opacity-50 hover:opacity-75"
-          : isFuture
-            ? isDirection
-              ? "opacity-85 hover:opacity-100"
-              : isConsequence
-                ? "opacity-90 hover:opacity-100"
-                : "opacity-85 hover:opacity-100"
-            : isDirection
-              ? "opacity-75 hover:opacity-100"
-              : isConsequence
-                ? "opacity-90 hover:opacity-100"
-                : "opacity-100"
+        weakened
+          ? "opacity-30 hover:opacity-55 grayscale-[0.5]"
+          : isPast
+            ? "opacity-50 hover:opacity-75"
+            : isFuture
+              ? isDirection
+                ? "opacity-85 hover:opacity-100"
+                : isConsequence
+                  ? "opacity-90 hover:opacity-100"
+                  : "opacity-85 hover:opacity-100"
+              : isDirection
+                ? "opacity-75 hover:opacity-100"
+                : isConsequence
+                  ? "opacity-90 hover:opacity-100"
+                  : "opacity-100"
       } ${justEmerged ? "animate-emerge" : ""}`}
     >
       <Handle type="target" position={Position.Left} className="!opacity-0" />
@@ -244,6 +252,24 @@ function TrailNode({ data, selected }: NodeProps) {
         {isDirection && decision === "pending" && !rippleState && (
           <p className="mt-0.5 text-[9px] uppercase tracking-wider text-slate-600 transition-colors group-hover:text-slate-500">
             Explore →
+          </p>
+        )}
+
+        {aiGenerated && !weakened && !rippleState && (
+          <p className="mt-0.5 text-[8px] font-medium tracking-wider text-violet-400/75">
+            ✦ agent-shaped
+          </p>
+        )}
+
+        {weakened && !rippleState && (
+          <p className="mt-0.5 text-[8px] font-medium tracking-wider text-slate-600">
+            ↓ less aligned
+          </p>
+        )}
+
+        {nodeModified && !weakened && !rippleState && (
+          <p className="mt-0.5 text-[8px] font-medium tracking-wider text-amber-500/70">
+            ~ reshaped
           </p>
         )}
 

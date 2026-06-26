@@ -28,8 +28,16 @@ export type WorldRelationship = {
   label: string;
 };
 
+export type AiDiscovery = Discovery & {
+  /** present only on AI-generated nodes */
+  sourceAgent?: string;
+  rippleHint?: string;
+  generated?: true;
+};
+
 export type PanelItem =
   | { kind: "discovery"; discovery: Discovery }
+  | { kind: "ai-discovery"; discovery: AiDiscovery }
   | { kind: "consequence"; consequence: WorldConsequence };
 
 export type HistoryEvent =

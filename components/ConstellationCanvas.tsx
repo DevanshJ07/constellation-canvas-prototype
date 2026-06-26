@@ -70,6 +70,15 @@ import {
 } from "@/lib/worldRipple";
 import { getAgentVoice } from "@/lib/agentVoices";
 import { buildAgentSelectInput } from "@/lib/agentSelectContext";
+import type { AiGeneratedBranch } from "@/lib/agentExplore";
+import type {
+  AgentAdaptInput,
+  AgentAdaptOutput,
+  ExploreAgent,
+  AgentInsight,
+  ExistingNodeInfo,
+} from "@/lib/agentAdapt";
+import WorldShiftModal, { type WorldShiftSummary } from "@/components/WorldShiftModal";
 import { getAgentReasoning } from "@/lib/agentReasoning";
 import { resolveNodeMeta, resolvePanelItem } from "@/lib/worldNodes";
 import {
@@ -218,6 +227,22 @@ export default function ConstellationCanvas({
   const [pendingEvolution, setPendingEvolution] = useState<EvolutionEventDef | null>(null);
   const [evolutionQueue, setEvolutionQueue] = useState<EvolutionEventDef[]>([]);
 
+  // ── AI-generated branches & world adaptation ──────────────────────────────
+  // keyed by parentNodeId → list of generated branches for that node
+  const [aiBranches, setAiBranches] = useState<Record<string, AiGeneratedBranch[]>>({});
+  // node title/description overrides (from adapt modify actions)
+  const [nodeOverrides, setNodeOverrides] = useState<
+    Record<string, { title: string; description: string; whyItMatters: string }>
+  >({});
+  // node IDs that have been weakened (dim + "less aligned" label)
+  const [weakenedIds, setWeakenedIds] = useState<Set<string>>(new Set());
+  const [activeSpecialists, setActiveSpecialists] = useState<ExploreAgent[]>([]);
+  const [agentInsights, setAgentInsights] = useState<AgentInsight[]>([]);
+  const [exploreLoading, setExploreLoading] = useState(false);
+  const [exploreFallback, setExploreFallback] = useState(false);
+  const [exploreError, setExploreError] = useState<string | null>(null);
+  const [adaptSummary, setAdaptSummary] = useState<WorldShiftSummary | null>(null);
+
   const handleAddTruth = useCallback((truth: string) => {
     setCreatorTruths((prev) => [...prev, truth]);
     setLatestShift({ truth, influence: getInfluence(truth) });
@@ -259,9 +284,9 @@ export default function ConstellationCanvas({
 
   const selectedNodeId = useMemo(() => {
     if (!selectedItem) return null;
-    return selectedItem.kind === "discovery"
-      ? selectedItem.discovery.id
-      : selectedItem.consequence.id;
+    if (selectedItem.kind === "discovery") return selectedItem.discovery.id;
+    if (selectedItem.kind === "ai-discovery") return selectedItem.discovery.id;
+    return selectedItem.consequence.id;
   }, [selectedItem]);
 
   const baseLayout = useMemo(
@@ -347,14 +372,23 @@ export default function ConstellationCanvas({
           )
       : [];
 
-    const futureIds = [
-      ...dirIds.map((id) => ({ id, kind: "direction" as const })),
-      ...consIds.map((id) => ({ id, kind: "consequence" as const })),
+    const aiFutures = (aiBranches[focusedId] ?? []).filter(
+      (b) => !hiddenIds.has(b.id) && decisions[b.id] !== "rejected",
+    );
+
+    type FutureEntry =
+      | { id: string; kind: "direction" | "consequence"; ai: false; branch: null }
+      | { id: string; kind: "direction"; ai: true; branch: AiGeneratedBranch };
+
+    const futureIds: FutureEntry[] = [
+      ...dirIds.map((id) => ({ id, kind: "direction" as const, ai: false as const, branch: null })),
+      ...consIds.map((id) => ({ id, kind: "consequence" as const, ai: false as const, branch: null })),
+      ...aiFutures.map((b) => ({ id: b.id, kind: "direction" as const, ai: true as const, branch: b })),
     ];
     const yPositions = computeFutureYPositions(futureIds.length, FUTURE_ROW_H);
 
     futureIds.forEach((item, j) => {
-      const { id, kind } = item;
+      const { id, kind, ai, branch: aiBranch } = item;
       const y = yPositions[j] ?? 0;
       const meta = resolveNodeMeta(id);
 
@@ -363,13 +397,20 @@ export default function ConstellationCanvas({
         type: "trailNode",
         position: { x: FUTURE_X, y },
         data: {
-          title: meta?.title ?? id,
-          category: meta?.category ?? (kind === "consequence" ? "Consequence" : undefined),
+          title: aiBranch
+            ? (nodeOverrides[aiBranch.id]?.title ?? aiBranch.title)
+            : (nodeOverrides[id]?.title ?? meta?.title ?? id),
+          category: aiBranch
+            ? `✦ ${aiBranch.sourceAgent ?? "Agent-shaped"}`
+            : (meta?.category ?? (kind === "consequence" ? "Consequence" : undefined)),
           role: kind,
           decision: decisions[id] ?? "pending",
           justEmerged: justEmergedIds.has(id),
           hasCreatorDirection: Boolean(creatorDirections[id]),
           journeyPhase: "future",
+          aiGenerated: ai,
+          weakened: weakenedIds.has(id),
+          nodeModified: Boolean(nodeOverrides[id]),
         } satisfies TrailNodeData,
         draggable: false,
         selectable: true,
@@ -380,13 +421,17 @@ export default function ConstellationCanvas({
         id: `future-${focusedId}-${id}`,
         source: focusedId,
         target: id,
-        animated: kind === "consequence",
-        style: kind === "consequence" ? CONSEQUENCE_EDGE_STYLE : FUTURE_EDGE_STYLE,
+        animated: kind === "consequence" || ai,
+        style: ai
+          ? { stroke: "rgba(139, 92, 246, 0.65)", strokeWidth: 1.5, strokeDasharray: "5 3" }
+          : kind === "consequence"
+            ? CONSEQUENCE_EDGE_STYLE
+            : FUTURE_EDGE_STYLE,
       });
     });
 
     return { nodes, edges };
-  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds]);
+  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds, aiBranches, weakenedIds, nodeOverrides]);
 
   // ── Canon layout: living evolution tree ─────────────────────────────────────
   const worldState = useMemo(
@@ -524,13 +569,15 @@ export default function ConstellationCanvas({
     return [];
   }, [navState, trailLayout.edges]);
 
-  // Directions + unlocked consequences for the side panel
+  // Directions + unlocked consequences + AI branches for the side panel
   const panelDirections = useMemo(() => {
     if (!selectedItem) return [];
     const id =
       selectedItem.kind === "discovery"
         ? selectedItem.discovery.id
-        : selectedItem.consequence.id;
+        : selectedItem.kind === "ai-discovery"
+          ? selectedItem.discovery.id
+          : selectedItem.consequence.id;
 
     const routeDirs = getChildren(id)
       .filter((dirId) => !hiddenIds.has(dirId) && decisions[dirId] !== "rejected")
@@ -561,8 +608,18 @@ export default function ConstellationCanvas({
             }))
         : [];
 
-    return [...routeDirs, ...consDirs];
-  }, [selectedItem, hiddenIds, decisions]);
+    const aiDirs = (aiBranches[id] ?? [])
+      .filter((b) => !hiddenIds.has(b.id) && decisions[b.id] !== "rejected")
+      .map((b) => ({
+        id: b.id,
+        title: b.title,
+        category: b.domain,
+        decision: decisions[b.id] ?? "pending",
+        kind: "route" as const,
+      }));
+
+    return [...routeDirs, ...consDirs, ...aiDirs];
+  }, [selectedItem, hiddenIds, decisions, aiBranches]);
 
   // ── Trail navigation ────────────────────────────────────────────────────────
   const navigateTrail = useCallback(
@@ -574,10 +631,29 @@ export default function ConstellationCanvas({
           idx >= 0 ? prev.trail.slice(0, idx + 1) : [...prev.trail, targetId];
         return { ...prev, trail };
       });
+
+      // Check if this is an AI-generated branch
+      const allAiBranches = Object.values(aiBranches).flat();
+      const aiBranch = allAiBranches.find((b) => b.id === targetId);
+      if (aiBranch) {
+        const aiDiscovery: import("@/types/discovery").AiDiscovery = {
+          id: aiBranch.id,
+          title: aiBranch.title,
+          description: aiBranch.description,
+          category: aiBranch.domain,
+          whyItMatters: aiBranch.whyItMatters,
+          sourceAgent: aiBranch.sourceAgent,
+          rippleHint: aiBranch.rippleHint,
+          generated: true,
+        };
+        setSelectedItem({ kind: "ai-discovery", discovery: aiDiscovery });
+        return;
+      }
+
       const item = resolvePanelItem(targetId);
       if (item) setSelectedItem(item);
     },
-    [],
+    [aiBranches],
   );
 
   // ── Interaction ───────────────────────────────────────────────────────────
@@ -664,7 +740,9 @@ export default function ConstellationCanvas({
       const id =
         selectedItem.kind === "discovery"
           ? selectedItem.discovery.id
-          : selectedItem.consequence.id;
+          : selectedItem.kind === "ai-discovery"
+            ? selectedItem.discovery.id
+            : selectedItem.consequence.id;
 
       if (action === "unaccept") {
         const worldDesc = getWorldDescendantIds(id).filter((did) =>
@@ -692,8 +770,19 @@ export default function ConstellationCanvas({
 
       setDecisions((prev) => ({ ...prev, [id]: decision }));
 
+      // Accepting a weakened node overrides the weakened state — the creator is
+      // explicitly committing to this truth regardless of direction alignment.
+      if (action === "accept" && weakenedIds.has(id)) {
+        setWeakenedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+
       if (action === "accept") {
-        const nodeTitle = resolveNodeMeta(id)?.title ?? id;
+        const aiTitle = selectedItem.kind === "ai-discovery" ? selectedItem.discovery.title : null;
+        const nodeTitle = nodeOverrides[id]?.title ?? aiTitle ?? resolveNodeMeta(id)?.title ?? id;
         const prevAccepted = acceptedIds;
         const nextAccepted = prevAccepted.includes(id)
           ? prevAccepted
@@ -797,7 +886,9 @@ export default function ConstellationCanvas({
     const id =
       selectedItem.kind === "discovery"
         ? selectedItem.discovery.id
-        : selectedItem.consequence.id;
+        : selectedItem.kind === "ai-discovery"
+          ? selectedItem.discovery.id
+          : selectedItem.consequence.id;
     return decisions[id] ?? "pending";
   }, [selectedItem, decisions]);
 
@@ -827,11 +918,15 @@ export default function ConstellationCanvas({
 
   const journeySteps = useMemo(() => {
     if (navState.mode !== "discovery") return [];
-    const steps = navState.trail.map((id, i, arr) => ({
-      id,
-      title: resolveNodeMeta(id)?.title ?? id,
-      role: (i === arr.length - 1 ? "current" : "step") as "step" | "current",
-    }));
+    const allAiBranches = Object.values(aiBranches).flat();
+    const steps = navState.trail.map((id, i, arr) => {
+      const aiBranch = allAiBranches.find((b) => b.id === id);
+      return {
+        id,
+        title: aiBranch ? aiBranch.title : (resolveNodeMeta(id)?.title ?? id),
+        role: (i === arr.length - 1 ? "current" : "step") as "step" | "current",
+      };
+    });
     return [
       {
         id: "__world-seed__",
@@ -841,7 +936,7 @@ export default function ConstellationCanvas({
       },
       ...steps,
     ];
-  }, [navState, worldSeed]);
+  }, [navState, worldSeed, aiBranches]);
 
   const potentialConsequences = useMemo(() => {
     if (!selectedNodeId) return [];
@@ -852,6 +947,240 @@ export default function ConstellationCanvas({
     const item = resolvePanelItem(nodeId);
     if (item) setSelectedItem(item);
   }, []);
+
+  const handleApplyAndGenerate = useCallback(
+    async (direction: string) => {
+      if (!selectedItem || !selectedNodeId) return;
+
+      const id = selectedNodeId;
+      setCreatorDirections((prev) => ({ ...prev, [id]: direction }));
+
+      const title =
+        selectedItem.kind === "discovery" || selectedItem.kind === "ai-discovery"
+          ? selectedItem.discovery.title
+          : selectedItem.consequence.title;
+      const description =
+        selectedItem.kind === "discovery" || selectedItem.kind === "ai-discovery"
+          ? selectedItem.discovery.description
+          : selectedItem.consequence.description;
+      const whyItMatters =
+        selectedItem.kind === "discovery" || selectedItem.kind === "ai-discovery"
+          ? (selectedItem.discovery.whyItMatters ?? "")
+          : (selectedItem.consequence.whyItMatters ?? "");
+
+      const activeDomain =
+        navState.mode === "discovery" || navState.mode === "constellation"
+          ? navState.regionId
+          : "";
+
+      // Build the existing future node list for adaptation analysis
+      const existingFutureNodes: ExistingNodeInfo[] = [
+        ...getChildren(id)
+          .filter((cid) => !hiddenIds.has(cid) && decisions[cid] !== "rejected")
+          .map((cid) => {
+            const meta = resolveNodeMeta(cid);
+            return {
+              id: cid,
+              title: nodeOverrides[cid]?.title ?? meta?.title ?? cid,
+              description: nodeOverrides[cid]?.description ?? "",
+              domain: activeDomain,
+              generated: false,
+            };
+          }),
+        ...(aiBranches[id] ?? [])
+          .filter((b) => !hiddenIds.has(b.id) && decisions[b.id] !== "rejected")
+          .map((b) => ({
+            id: b.id,
+            title: nodeOverrides[b.id]?.title ?? b.title,
+            description: nodeOverrides[b.id]?.description ?? b.description,
+            domain: b.domain,
+            generated: true,
+          })),
+      ];
+
+      const rejectedTitles = Object.entries(decisions)
+        .filter(([, d]) => d === "rejected")
+        .map(([rid]) => resolveNodeMeta(rid)?.title ?? rid);
+
+      const establishedTitles = acceptedIds
+        .map((aid) => resolveNodeMeta(aid)?.title ?? aid);
+
+      const input: AgentAdaptInput = {
+        worldSeed,
+        currentNode: { id, title, description, whyItMatters, domain: activeDomain },
+        activeDomain,
+        creatorDirection: direction,
+        canonThreads,
+        worldTensions,
+        currentPath: journeySteps.map((s) => s.title),
+        existingFutureNodes,
+        existingSiblingNodes: [],
+        rejectedIdeas: rejectedTitles,
+        establishedTruths: establishedTitles,
+      };
+
+      setExploreLoading(true);
+      setExploreError(null);
+      setAdaptSummary(null);
+
+      try {
+        const res = await fetch("/api/agents/adapt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        });
+
+        if (!res.ok) throw new Error("API error");
+
+        const data = (await res.json()) as AgentAdaptOutput;
+
+        setActiveSpecialists(data.selectedAgents ?? []);
+        setAgentInsights(data.agentInsights ?? []);
+        setExploreFallback(data.usedFallback ?? false);
+
+        // ── Apply adaptations ──────────────────────────────────────────────
+
+        const existingTitleSet = new Set(
+          existingFutureNodes.map((n) => n.title.toLowerCase()),
+        );
+
+        // ADD new branches
+        const newBranches: AiGeneratedBranch[] = (data.adaptations?.add ?? [])
+          .filter((b) => b?.title && !existingTitleSet.has(b.title.toLowerCase()))
+          .map((b, i) => ({
+            ...b,
+            id: `ai-${id}-${Date.now()}-${i}`,
+            parentId: id,
+            generated: true as const,
+          }));
+
+        if (newBranches.length > 0) {
+          setAiBranches((prev) => ({
+            ...prev,
+            [id]: [...(prev[id] ?? []), ...newBranches],
+          }));
+          setJustEmergedIds(new Set(newBranches.map((b) => b.id)));
+          window.setTimeout(() => setJustEmergedIds(new Set()), EMERGE_GLOW_MS);
+        }
+
+        // MODIFY existing nodes
+        if ((data.adaptations?.modify ?? []).length > 0) {
+          setAiBranches((prev) => {
+            const next = { ...prev };
+            for (const [parentId, branches] of Object.entries(next)) {
+              next[parentId] = branches.map((b) => {
+                const mod = data.adaptations.modify.find((m) => m.targetId === b.id);
+                if (!mod) return b;
+                return {
+                  ...b,
+                  title: mod.newTitle || b.title,
+                  description: mod.newDescription || b.description,
+                  whyItMatters: mod.newWhyItMatters || b.whyItMatters,
+                };
+              });
+            }
+            return next;
+          });
+          // For hardcoded nodes, store overrides
+          for (const mod of data.adaptations.modify) {
+            const isAiNode = Object.values(aiBranches).flat().some((b) => b.id === mod.targetId);
+            if (!isAiNode && mod.newTitle) {
+              setNodeOverrides((prev) => ({
+                ...prev,
+                [mod.targetId]: {
+                  title: mod.newTitle,
+                  description: mod.newDescription,
+                  whyItMatters: mod.newWhyItMatters,
+                },
+              }));
+            }
+          }
+        }
+
+        // REPLACE: hide original (if not accepted), add replacement
+        const replacedInfo: { from: string; to: string }[] = [];
+        for (const rep of data.adaptations?.replace ?? []) {
+          if (acceptedIds.includes(rep.targetId)) continue; // canon protected
+          setHiddenIds((prev) => new Set([...prev, rep.targetId]));
+          const fromTitle = existingFutureNodes.find((n) => n.id === rep.targetId)?.title ?? rep.targetId;
+          const replacement: AiGeneratedBranch = {
+            ...rep.replacement,
+            id: `ai-rep-${rep.targetId}-${Date.now()}`,
+            parentId: id,
+            generated: true as const,
+          };
+          setAiBranches((prev) => ({
+            ...prev,
+            [id]: [...(prev[id] ?? []), replacement],
+          }));
+          replacedInfo.push({ from: fromTitle, to: rep.replacement.title });
+        }
+
+        // WEAKEN: visual dimming
+        const newWeak = (data.adaptations?.weaken ?? [])
+          .filter((w) => !acceptedIds.includes(w.targetId))
+          .map((w) => w.targetId);
+        if (newWeak.length > 0) {
+          setWeakenedIds((prev) => new Set([...prev, ...newWeak]));
+        }
+
+        // REMOVE: hide (not if accepted)
+        for (const rem of data.adaptations?.remove ?? []) {
+          if (!acceptedIds.includes(rem.targetId)) {
+            setHiddenIds((prev) => new Set([...prev, rem.targetId]));
+          }
+        }
+
+        // Build World Shift summary for modal
+        const weakenedSummary = (data.adaptations?.weaken ?? [])
+          .filter((w) => !acceptedIds.includes(w.targetId))
+          .map((w) => ({
+            title: existingFutureNodes.find((n) => n.id === w.targetId)?.title ?? w.targetId,
+            reason: w.reason,
+          }));
+
+        const modifiedSummary = (data.adaptations?.modify ?? []).map((m) => ({
+          from: existingFutureNodes.find((n) => n.id === m.targetId)?.title ?? m.targetId,
+          to: m.newTitle,
+        }));
+
+        const removedSummary = (data.adaptations?.remove ?? [])
+          .filter((r) => !acceptedIds.includes(r.targetId))
+          .map((r) => existingFutureNodes.find((n) => n.id === r.targetId)?.title ?? r.targetId);
+
+        setAdaptSummary({
+          added: newBranches.map((b) => b.title),
+          modified: modifiedSummary,
+          replaced: replacedInfo,
+          weakened: weakenedSummary,
+          removed: removedSummary,
+          specialists: (data.selectedAgents ?? []).map((a) => a.name),
+          worldShiftSummary: data.worldShiftSummary ?? "",
+          usedFallback: data.usedFallback ?? false,
+        });
+      } catch {
+        setExploreError(
+          "Agents could not generate new paths. Prototype suggestions are still available.",
+        );
+      } finally {
+        setExploreLoading(false);
+      }
+    },
+    [
+      selectedItem,
+      selectedNodeId,
+      worldSeed,
+      navState,
+      canonThreads,
+      worldTensions,
+      journeySteps,
+      decisions,
+      aiBranches,
+      hiddenIds,
+      acceptedIds,
+      nodeOverrides,
+    ],
+  );
 
   const agentSelectContext = useMemo(() => {
     if (!selectedItem) {
@@ -1035,12 +1364,27 @@ export default function ConstellationCanvas({
           onClose={() => setSelectedItem(null)}
           creatorDirection={selectedNodeId ? (creatorDirections[selectedNodeId] ?? null) : null}
           onSetDirection={handleSetDirection}
+          onApplyAndGenerate={handleApplyAndGenerate}
           agentVoice={agentVoice}
           agentReasoning={agentReasoning}
           journeySteps={journeySteps}
           potentialConsequences={potentialConsequences}
           agentSelectContext={agentSelectContext}
           agentSelectContextKey={agentSelectContextKey}
+          activeSpecialists={activeSpecialists}
+          agentInsights={agentInsights}
+          exploreLoading={exploreLoading}
+          exploreFallback={exploreFallback}
+          exploreError={exploreError}
+        />
+      )}
+
+      {/* World Shift modal — shown after adaptation */}
+      {adaptSummary && (
+        <WorldShiftModal
+          summary={adaptSummary}
+          hasPanel={Boolean(selectedItem)}
+          onDismiss={() => setAdaptSummary(null)}
         />
       )}
     </div>

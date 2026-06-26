@@ -68,11 +68,11 @@ export function buildAgentSelectInput(params: {
   currentPath: string[];
 }): AgentSelectInput {
   const title =
-    params.item.kind === "discovery"
+    params.item.kind === "discovery" || params.item.kind === "ai-discovery"
       ? params.item.discovery.title
       : params.item.consequence.title;
   const description =
-    params.item.kind === "discovery"
+    params.item.kind === "discovery" || params.item.kind === "ai-discovery"
       ? params.item.discovery.description
       : params.item.consequence.description;
 
