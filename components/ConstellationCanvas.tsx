@@ -69,6 +69,7 @@ import {
   type RippleState,
 } from "@/lib/worldRipple";
 import { getAgentVoice } from "@/lib/agentVoices";
+import { buildAgentSelectInput } from "@/lib/agentSelectContext";
 import { getAgentReasoning } from "@/lib/agentReasoning";
 import { resolveNodeMeta, resolvePanelItem } from "@/lib/worldNodes";
 import {
@@ -852,6 +853,54 @@ export default function ConstellationCanvas({
     if (item) setSelectedItem(item);
   }, []);
 
+  const agentSelectContext = useMemo(() => {
+    if (!selectedItem) {
+      return {
+        worldSeed,
+        currentNode: { title: "", description: "" },
+        activeDomain: "",
+        creatorDirection: "",
+        canonThreads,
+        worldTensions,
+        currentPath: [] as string[],
+      };
+    }
+
+    const currentPath =
+      navState.mode === "discovery"
+        ? journeySteps.map((s) => s.title)
+        : selectedNodeId
+          ? [worldSeed, resolveNodeMeta(selectedNodeId)?.title ?? selectedNodeId]
+          : [worldSeed];
+
+    return buildAgentSelectInput({
+      worldSeed,
+      item: selectedItem,
+      navState,
+      nodeId: selectedNodeId,
+      creatorDirection: selectedNodeId
+        ? (creatorDirections[selectedNodeId] ?? null)
+        : null,
+      canonThreads,
+      worldTensions,
+      currentPath,
+    });
+  }, [
+    selectedItem,
+    worldSeed,
+    navState,
+    selectedNodeId,
+    creatorDirections,
+    canonThreads,
+    worldTensions,
+    journeySteps,
+  ]);
+
+  const agentSelectContextKey = useMemo(
+    () => JSON.stringify(agentSelectContext),
+    [agentSelectContext],
+  );
+
   return (
     <div className="relative h-screen w-screen bg-[#0a0a0f]">
       <WorldSidebar
@@ -990,6 +1039,8 @@ export default function ConstellationCanvas({
           agentReasoning={agentReasoning}
           journeySteps={journeySteps}
           potentialConsequences={potentialConsequences}
+          agentSelectContext={agentSelectContext}
+          agentSelectContextKey={agentSelectContextKey}
         />
       )}
     </div>

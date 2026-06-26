@@ -8,6 +8,8 @@ import type {
 } from "@/types/discovery";
 import type { AgentVoice } from "@/lib/agentVoices";
 import type { AgentReasoning } from "@/lib/agentReasoning";
+import type { AgentSelectInput } from "@/lib/agentSelect";
+import ActiveSpecialists from "@/components/ActiveSpecialists";
 
 export type PanelDirection = {
   id: string;
@@ -44,6 +46,8 @@ type DiscoveryPanelProps = {
   agentVoice: AgentVoice | null;
   agentReasoning: AgentReasoning | null;
   potentialConsequences: string[];
+  agentSelectContext: AgentSelectInput;
+  agentSelectContextKey: string;
 };
 
 export default function DiscoveryPanel({
@@ -60,6 +64,8 @@ export default function DiscoveryPanel({
   agentVoice,
   agentReasoning,
   potentialConsequences,
+  agentSelectContext,
+  agentSelectContextKey,
 }: DiscoveryPanelProps) {
   const [draftDirection, setDraftDirection] = useState("");
   const title =
@@ -217,6 +223,12 @@ export default function DiscoveryPanel({
             </ul>
           </section>
         )}
+
+        {/* Active Specialists — dynamic roster */}
+        <ActiveSpecialists
+          context={agentSelectContext}
+          contextKey={agentSelectContextKey}
+        />
 
         {/* Agent Reasoning — why branches appeared */}
         {agentReasoning && (
