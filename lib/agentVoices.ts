@@ -99,10 +99,10 @@ function inferRegion(nodeId: string): ConstellationRegionId | undefined {
 
 export function getAgentVoice(
   nodeId: string,
-  regionId?: ConstellationRegionId,
+  regionId?: string,
 ): AgentVoice | null {
   if (NODE_VOICES[nodeId]) return NODE_VOICES[nodeId]!;
-  const region = regionId ?? inferRegion(nodeId);
-  if (region) return REGION_VOICES[region];
+  const region = (regionId ?? inferRegion(nodeId)) as ConstellationRegionId | undefined;
+  if (region && REGION_VOICES[region]) return REGION_VOICES[region]!;
   return null;
 }

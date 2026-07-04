@@ -2,12 +2,14 @@
 
 import { CONSTELLATION_REGIONS } from "@/lib/regions";
 import type { NavState } from "@/types/discovery";
+import type { DynamicConstellation } from "@/lib/dynamicConstellations";
 
 type WorldSidebarProps = {
   navState: NavState;
   onNavigate: (state: NavState) => void;
   acceptedCount: number;
   creatorTruths: string[];
+  dynamicConstellations?: DynamicConstellation[];
 };
 
 type NavButtonProps = {
@@ -45,14 +47,23 @@ export default function WorldSidebar({
   onNavigate,
   acceptedCount,
   creatorTruths,
+  dynamicConstellations = [],
 }: WorldSidebarProps) {
   const { mode } = navState;
 
+  // Resolve the label for the current focused region — check dynamic first,
+  // then fall back to static CONSTELLATION_REGIONS
   const focusedRegionLabel =
     mode === "constellation" || mode === "discovery"
-      ? (CONSTELLATION_REGIONS.find((r) => r.id === navState.regionId)?.label ??
-        "")
+      ? (dynamicConstellations.find((c) => c.id === navState.regionId)?.title ??
+          CONSTELLATION_REGIONS.find((r) => r.id === navState.regionId)?.label ??
+          navState.regionId)
       : "";
+
+  const focusedRegionAgent =
+    mode === "constellation" || mode === "discovery"
+      ? dynamicConstellations.find((c) => c.id === navState.regionId)?.agentName
+      : undefined;
 
   return (
     <nav className="absolute left-0 top-0 z-20 flex h-full w-44 flex-col border-r border-slate-800/60 bg-slate-950/90 backdrop-blur-md">
@@ -98,6 +109,11 @@ export default function WorldSidebar({
                   <p className="mt-0.5 text-xs font-medium leading-snug text-slate-200">
                     {navState.discoveryTitle}
                   </p>
+                  {focusedRegionAgent && (
+                    <p className="mt-0.5 text-[9px] text-slate-600">
+                      via {focusedRegionAgent}
+                    </p>
+                  )}
                 </div>
                 <button
                   type="button"

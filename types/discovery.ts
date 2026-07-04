@@ -1,5 +1,3 @@
-import type { ConstellationRegionId } from "@/lib/regions";
-
 export type Discovery = {
   id: string;
   title: string;
@@ -47,11 +45,11 @@ export type HistoryEvent =
 
 export type NavState =
   | { mode: "overview" }
-  | { mode: "constellation"; regionId: ConstellationRegionId }
+  | { mode: "constellation"; regionId: string }
   | {
       mode: "discovery";
       discoveryId: string;
-      regionId: ConstellationRegionId;
+      regionId: string;
       discoveryTitle: string;
       trail: string[];
     }

@@ -1,6 +1,6 @@
 import { CONSEQUENCE_BY_ID } from "@/lib/worldLogic";
-import { PARENT_MAP, WORLD_NODES } from "@/lib/worldData";
-import { CONSTELLATION_REGIONS, type ConstellationRegionId } from "@/lib/regions";
+import { PARENT_MAP } from "@/lib/worldData";
+import { CONSTELLATION_REGIONS } from "@/lib/regions";
 import { RIPPLE_MAP } from "@/lib/worldRipple";
 import { resolveNodeMeta } from "@/lib/worldNodes";
 
@@ -20,7 +20,7 @@ export type CanonThread = {
 };
 
 export type DomainThreads = {
-  id: ConstellationRegionId;
+  id: string;
   label: string;
   threads: CanonThread[];
 };
@@ -38,7 +38,7 @@ function isRegionRoot(id: string): boolean {
   return REGION_IDS.has(id);
 }
 
-function regionForNode(id: string): ConstellationRegionId | null {
+function regionForNode(id: string): string | null {
   const consequence = CONSEQUENCE_BY_ID[id];
   if (consequence?.parentId) {
     return regionForNode(consequence.parentId);
@@ -48,7 +48,7 @@ function regionForNode(id: string): ConstellationRegionId | null {
   const visited = new Set<string>();
   while (current && !visited.has(current)) {
     visited.add(current);
-    if (REGION_IDS.has(current)) return current as ConstellationRegionId;
+    if (REGION_IDS.has(current)) return current;
     current = PARENT_MAP[current];
   }
   return null;
@@ -135,7 +135,18 @@ function collectLinearChains(
   return chains;
 }
 
-export function buildCanonThreads(acceptedIds: string[]): CanonThreadsData {
+/**
+ * Build the full canon threads structure.
+ *
+ * @param acceptedIds      Ordered list of accepted node IDs.
+ * @param nodeConstellationMap  Maps node IDs → dynamic constellation ID (for AI-generated accepted nodes).
+ * @param dynamicDomains   Dynamic constellation id+label pairs from the LLM, used for grouping orphan threads.
+ */
+export function buildCanonThreads(
+  acceptedIds: string[],
+  nodeConstellationMap: Record<string, string> = {},
+  dynamicDomains: { id: string; label: string }[] = [],
+): CanonThreadsData {
   if (acceptedIds.length === 0) {
     return { domains: [], orphanThreads: [] };
   }
@@ -166,31 +177,54 @@ export function buildCanonThreads(acceptedIds: string[]): CanonThreadsData {
     allChains.push(...collectLinearChains(root, childrenOf));
   }
 
-  const domainMap = new Map<ConstellationRegionId, CanonThread[]>();
+  // Static region map
+  const staticDomainMap = new Map<string, CanonThread[]>();
   for (const region of CONSTELLATION_REGIONS) {
-    domainMap.set(region.id, []);
+    staticDomainMap.set(region.id, []);
   }
+
+  // Dynamic constellation map
+  const dynamicDomainMap = new Map<string, CanonThread[]>();
+  for (const d of dynamicDomains) {
+    dynamicDomainMap.set(d.id, []);
+  }
+
   const orphanThreads: CanonThread[] = [];
 
   for (const thread of allChains) {
     const rootId = thread.nodes[0]?.id;
     if (!rootId) continue;
 
-    const region = regionForNode(rootId);
-    if (region) {
-      domainMap.get(region)?.push(thread);
-    } else {
-      orphanThreads.push(thread);
+    // 1. Static region?
+    const staticRegion = regionForNode(rootId);
+    if (staticRegion && staticDomainMap.has(staticRegion)) {
+      staticDomainMap.get(staticRegion)?.push(thread);
+      continue;
     }
+
+    // 2. Dynamic constellation (via nodeConstellationMap)?
+    const dynConstellationId = nodeConstellationMap[rootId];
+    if (dynConstellationId && dynamicDomainMap.has(dynConstellationId)) {
+      dynamicDomainMap.get(dynConstellationId)?.push(thread);
+      continue;
+    }
+
+    orphanThreads.push(thread);
   }
 
-  const domains: DomainThreads[] = CONSTELLATION_REGIONS.map((r) => ({
+  const staticDomains: DomainThreads[] = CONSTELLATION_REGIONS.map((r) => ({
     id: r.id,
     label: r.label,
-    threads: domainMap.get(r.id) ?? [],
+    threads: staticDomainMap.get(r.id) ?? [],
   })).filter((d) => d.threads.length > 0);
 
-  return { domains, orphanThreads };
+  const dynDomains: DomainThreads[] = dynamicDomains.map((d) => ({
+    id: d.id,
+    label: d.label,
+    threads: dynamicDomainMap.get(d.id) ?? [],
+  })).filter((d) => d.threads.length > 0);
+
+  return { domains: [...staticDomains, ...dynDomains], orphanThreads };
 }
 
 /** @deprecated Use buildCanonThreads — kept for import compatibility. */

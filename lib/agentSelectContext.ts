@@ -18,11 +18,11 @@ const REGION_IDS = new Set<string>([
   "mystery",
 ]);
 
-function regionLabel(id: ConstellationRegionId): string {
+function regionLabel(id: string): string {
   return CONSTELLATION_REGIONS.find((r) => r.id === id)?.label ?? id;
 }
 
-function regionForNodeId(nodeId: string): ConstellationRegionId | null {
+function regionForNodeId(nodeId: string): string | null {
   const consequence = CONSEQUENCE_BY_ID[nodeId];
   if (consequence?.parentId) {
     return regionForNodeId(consequence.parentId);
@@ -35,7 +35,7 @@ function regionForNodeId(nodeId: string): ConstellationRegionId | null {
   const visited = new Set<string>();
   while (current && !visited.has(current)) {
     visited.add(current);
-    if (REGION_IDS.has(current)) return current as ConstellationRegionId;
+    if (REGION_IDS.has(current)) return current;
     current = PARENT_MAP[current];
   }
   return null;
