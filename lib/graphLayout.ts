@@ -14,6 +14,62 @@ export function computeFutureYPositions(count: number, baseGap = 72): number[] {
   return Array.from({ length: count }, (_, j) => (j - (count - 1) / 2) * spacing);
 }
 
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+
+export type OrbitalLayoutOptions = {
+  centerX?: number;
+  centerY?: number;
+  baseRadius?: number;
+  radiusStep?: number;
+  /** Stable phase offset derived from a string (e.g. constellation id). */
+  phaseSeed?: string;
+};
+
+function stablePhaseOffset(seed: string): number {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  }
+  return ((hash % 360) * Math.PI) / 180;
+}
+
+/**
+ * Positions child nodes in a golden-angle spiral around a central point.
+ * Deterministic for the same count + options.
+ */
+export function computeOrbitalPositions(
+  count: number,
+  options: OrbitalLayoutOptions = {},
+): { x: number; y: number }[] {
+  if (count <= 0) return [];
+
+  const {
+    centerX = -110,
+    centerY = 0,
+    baseRadius = 250,
+    radiusStep = 44,
+    phaseSeed = "",
+  } = options;
+
+  const phase = phaseSeed ? stablePhaseOffset(phaseSeed) : 0;
+  const scaledBase =
+    count === 1 ? baseRadius * 0.75 : count <= 3 ? baseRadius * 0.88 : baseRadius;
+  const scaledStep =
+    count <= 2 ? radiusStep * 0.65 : count <= 4 ? radiusStep * 0.82 : radiusStep;
+
+  return Array.from({ length: count }, (_, index) => {
+    const angle = phase + index * GOLDEN_ANGLE;
+    const radius = scaledBase + index * scaledStep;
+    return {
+      x: centerX + Math.cos(angle) * radius,
+      y: centerY + Math.sin(angle) * radius,
+    };
+  });
+}
+
+/** Default center for constellation-root exploration (biased left for right panel). */
+export const CONSTELLATION_ORBIT_CENTER = { x: -110, y: 0 } as const;
+
 export type LabelCollisionEntry = {
   id: string;
   x: number;

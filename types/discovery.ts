@@ -31,6 +31,11 @@ export type AiDiscovery = Discovery & {
   sourceAgent?: string;
   rippleHint?: string;
   generated?: true;
+  /** Architecture / World Brain starting node fields */
+  whyPromising?: string;
+  risk?: string;
+  explorationQuestions?: string[];
+  nodeType?: string;
 };
 
 export type PanelItem =

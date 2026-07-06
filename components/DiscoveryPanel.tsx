@@ -98,6 +98,10 @@ export default function DiscoveryPanel({
   const isAiNode = item.kind === "ai-discovery";
   const sourceAgent = isAiNode ? item.discovery.sourceAgent : null;
   const rippleHint = isAiNode ? item.discovery.rippleHint : null;
+  const whyPromising = isAiNode ? item.discovery.whyPromising : null;
+  const risk = isAiNode ? item.discovery.risk : null;
+  const explorationQuestions = isAiNode ? item.discovery.explorationQuestions : null;
+  const nodeType = isAiNode ? item.discovery.nodeType : null;
 
   const isAccepted = decision === "accepted";
   const isRejected = decision === "rejected";
@@ -125,7 +129,9 @@ export default function DiscoveryPanel({
           <div>
             <p className="text-xs uppercase tracking-wider text-violet-400/80">
               {isAiNode ? (
-                <span className="text-violet-300/90">✦ agent-shaped · {category}</span>
+                <span className="text-violet-300/90">
+                  ✦ agent-shaped · {nodeType ?? category}
+                </span>
               ) : (
                 category
               )}
@@ -229,12 +235,38 @@ export default function DiscoveryPanel({
           <p className="text-sm leading-relaxed text-slate-300">{description}</p>
         </section>
 
-        {whyItMatters && (
+        {(whyItMatters || whyPromising) && (
           <section>
             <h3 className="mb-2 text-xs uppercase tracking-wider text-slate-500">
               Why it matters
             </h3>
-            <p className="text-sm leading-relaxed text-slate-400">{whyItMatters}</p>
+            <p className="text-sm leading-relaxed text-slate-400">
+              {whyPromising ?? whyItMatters}
+            </p>
+          </section>
+        )}
+
+        {risk && (
+          <section>
+            <h3 className="mb-2 text-xs uppercase tracking-wider text-slate-500">
+              Risk
+            </h3>
+            <p className="text-sm leading-relaxed text-amber-400/70">{risk}</p>
+          </section>
+        )}
+
+        {explorationQuestions && explorationQuestions.length > 0 && (
+          <section>
+            <h3 className="mb-2 text-xs uppercase tracking-wider text-slate-500">
+              Exploration questions
+            </h3>
+            <ul className="space-y-1.5">
+              {explorationQuestions.map((q, i) => (
+                <li key={i} className="text-sm leading-relaxed text-slate-400">
+                  · {q}
+                </li>
+              ))}
+            </ul>
           </section>
         )}
 

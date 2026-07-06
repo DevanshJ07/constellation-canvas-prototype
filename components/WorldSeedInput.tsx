@@ -2,9 +2,16 @@
 
 import { useState } from "react";
 import type { ConstellationCreateOutput } from "@/lib/dynamicConstellations";
+import type { WorldArchitecture } from "@/lib/worldBrain/architectWorld";
+import {
+  mapArchitectureToCanvasModel,
+  type CanvasWorldModel,
+} from "@/lib/worldBrain/mapArchitectureToCanvas";
 
 const DEFAULT_SEED =
   "Psychological horror universe rooted in forgotten Indian folklore.";
+
+const DEFAULT_PURPOSE = "worldbuilding exploration";
 
 const EXAMPLE_SEEDS = [
   "A slapstick superhero comedy set in an Indian engineering college",
@@ -14,17 +21,58 @@ const EXAMPLE_SEEDS = [
 ];
 
 type WorldSeedInputProps = {
-  onGenerate: (seed: string, result: ConstellationCreateOutput) => void;
+  onGenerate: (
+    seed: string,
+    result: ConstellationCreateOutput,
+    architectureModel?: CanvasWorldModel,
+    purpose?: string,
+  ) => void;
 };
 
 type LoadingStep = "idle" | "reading" | "assembling" | "done";
 
 export default function WorldSeedInput({ onGenerate }: WorldSeedInputProps) {
   const [seed, setSeed] = useState(DEFAULT_SEED);
+  const [purpose, setPurpose] = useState(DEFAULT_PURPOSE);
   const [step, setStep] = useState<LoadingStep>("idle");
   const [error, setError] = useState<string | null>(null);
 
   const isLoading = step === "reading" || step === "assembling";
+
+  async function fetchConstellations(trimmed: string): Promise<ConstellationCreateOutput> {
+    const res = await fetch("/api/constellations/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ worldSeed: trimmed }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Server error ${res.status}`);
+    }
+
+    return (await res.json()) as ConstellationCreateOutput;
+  }
+
+  async function fetchArchitecture(
+    trimmed: string,
+    purposeValue: string,
+  ): Promise<CanvasWorldModel | undefined> {
+    const res = await fetch("/api/world/architect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        worldPrompt: trimmed,
+        purpose: purposeValue.trim() || DEFAULT_PURPOSE,
+      }),
+    });
+
+    if (!res.ok) return undefined;
+
+    const data = (await res.json()) as WorldArchitecture;
+    if (!data?.visibleConstellations?.length) return undefined;
+
+    return mapArchitectureToCanvasModel(data);
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -37,42 +85,32 @@ export default function WorldSeedInput({ onGenerate }: WorldSeedInputProps) {
     await new Promise((r) => setTimeout(r, 350));
     setStep("assembling");
 
-    try {
-      const res = await fetch("/api/constellations/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ worldSeed: trimmed }),
-      });
+    const purposeValue = purpose.trim() || DEFAULT_PURPOSE;
 
-      if (!res.ok) {
-        throw new Error(`Server error ${res.status}`);
-      }
+    const [architectureModel, constellationResult] = await Promise.all([
+      fetchArchitecture(trimmed, purposeValue).catch(() => undefined),
+      fetchConstellations(trimmed).catch(() => null),
+    ]);
 
-      const data = (await res.json()) as ConstellationCreateOutput;
-      onGenerate(trimmed, data);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      setError(`Could not reach server: ${msg}. Using fallback agents.`);
-      setStep("idle");
-
-      // Proceed with the seed using a fallback result
-      try {
-        const fallbackRes = await fetch("/api/constellations/create", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ worldSeed: trimmed }),
-        });
-        const fallbackData = (await fallbackRes.json()) as ConstellationCreateOutput;
-        onGenerate(trimmed, { ...fallbackData, usedFallback: true });
-      } catch {
-        onGenerate(trimmed, {
-          worldInterpretation: { genre: "", tone: "", medium: "", coreCreativeChallenge: "" },
-          constellations: [],
-          usedFallback: true,
-          fallbackReason: "Could not reach server",
-        });
-      }
+    if (constellationResult) {
+      onGenerate(trimmed, constellationResult, architectureModel, purposeValue);
+      return;
     }
+
+    setError("Could not reach server. Using fallback agents.");
+    setStep("idle");
+
+    onGenerate(
+      trimmed,
+      {
+        worldInterpretation: { genre: "", tone: "", medium: "", coreCreativeChallenge: "" },
+        constellations: [],
+        usedFallback: true,
+        fallbackReason: "Could not reach server",
+      },
+      architectureModel,
+      purposeValue,
+    );
   }
 
   const stepLabel =
@@ -104,6 +142,24 @@ export default function WorldSeedInput({ onGenerate }: WorldSeedInputProps) {
             className="w-full resize-none rounded-lg border border-slate-800 bg-slate-900/50 px-4 py-3 text-sm leading-relaxed text-slate-200 placeholder:text-slate-600 outline-none focus:border-slate-600 disabled:opacity-50"
             placeholder="Describe the world you want to explore..."
           />
+
+          <div>
+            <label
+              htmlFor="world-purpose"
+              className="mb-1.5 block text-[9px] uppercase tracking-[0.18em] text-slate-600"
+            >
+              Purpose (optional)
+            </label>
+            <input
+              id="world-purpose"
+              type="text"
+              value={purpose}
+              onChange={(e) => setPurpose(e.target.value)}
+              disabled={isLoading}
+              placeholder={DEFAULT_PURPOSE}
+              className="w-full rounded-lg border border-slate-800 bg-slate-900/50 px-4 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-slate-600 disabled:opacity-50"
+            />
+          </div>
 
           {/* Example seeds */}
           <div className="space-y-1.5">

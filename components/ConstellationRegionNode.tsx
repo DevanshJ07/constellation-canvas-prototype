@@ -8,12 +8,15 @@ import type { DiscoveryDecision } from "@/types/discovery";
 export type VitalityDot = { revealed: boolean; decision: DiscoveryDecision };
 
 export type ConstellationRegionNodeData = {
-  regionId: ConstellationRegionId;
+  regionId: string;
+  themeKey?: ConstellationRegionId;
   label: string;
   icon: string;
   width: number;
   height: number;
   vitalityDots?: VitalityDot[];
+  description?: string;
+  question?: string;
 };
 
 const STAR_CLUSTERS: Record<
@@ -86,10 +89,11 @@ function ConstellationLines({
 }
 
 export default function ConstellationRegionNode({ data }: NodeProps) {
-  const { regionId, label, icon, width, height, vitalityDots } =
+  const { regionId, themeKey, label, icon, width, height, vitalityDots } =
     data as ConstellationRegionNodeData;
-  const theme = getRegionTheme(regionId);
-  const stars = STAR_CLUSTERS[regionId];
+  const themeId = themeKey ?? "mythology";
+  const theme = getRegionTheme(themeId);
+  const stars = STAR_CLUSTERS[themeId] ?? STAR_CLUSTERS.mythology;
   const isOverview = Boolean(vitalityDots);
 
   const acceptedCount = vitalityDots?.filter((d) => d.decision === "accepted").length ?? 0;

@@ -2,6 +2,7 @@ import { MOCK_DISCOVERIES } from "@/lib/mockDiscoveries";
 import { TRAIL_NODES } from "@/lib/explorationTrail";
 import { CONSEQUENCE_BY_ID } from "@/lib/worldLogic";
 import { WORLD_NODES } from "@/lib/worldData";
+import { resolveCanvasNodeMeta } from "@/lib/worldBrain/mapArchitectureToCanvas";
 import type { PanelItem } from "@/types/discovery";
 
 export type NodeMeta = {
@@ -16,6 +17,10 @@ export type NodeMeta = {
  * Priority: WORLD_NODES → MOCK_DISCOVERIES → CONSEQUENCE_BY_ID → TRAIL_NODES
  */
 export function resolveNodeMeta(id: string): NodeMeta | null {
+  const canvasMeta = resolveCanvasNodeMeta(id);
+  if (canvasMeta) {
+    return { id, title: canvasMeta.title, category: canvasMeta.category, kind: "discovery" };
+  }
   const worldNode = WORLD_NODES[id];
   if (worldNode) {
     return { id, title: worldNode.title, category: "World", kind: "discovery" };

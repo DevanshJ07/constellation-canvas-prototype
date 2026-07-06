@@ -6,8 +6,10 @@ import {
   DISCOVERY_REGION_MAP,
   getRegionById,
   getRegionTheme,
+  REGION_THEMES,
 } from "@/lib/regions";
 import { WORLD_RELATIONSHIPS } from "@/lib/worldLogic";
+import type { CanvasWorldModel } from "@/lib/worldBrain/mapArchitectureToCanvas";
 
 const DISCOVERY_OFFSET = { x: 40, y: 88 };
 const DISCOVERY_ROW_HEIGHT = 64;
@@ -114,4 +116,40 @@ export function buildConstellationLayout(
     nodes: [...regionNodes, ...discoveryNodes],
     edges: [...discoveryEdges, ...relationshipEdges],
   };
+}
+
+const THEME_KEYS = Object.keys(REGION_THEMES) as ConstellationRegionId[];
+
+/** Spatial overview layout for architecture-generated constellations. */
+export function buildArchitectureOverviewLayout(
+  model: CanvasWorldModel,
+): { nodes: Node[]; edges: Edge[] } {
+  const sorted = [...model.constellations].sort((a, b) => a.priority - b.priority);
+
+  const regionNodes: Node[] = sorted.map((constellation, i) => {
+    const slot = CONSTELLATION_REGIONS[i % CONSTELLATION_REGIONS.length]!;
+    const themeKey = THEME_KEYS[i % THEME_KEYS.length]!;
+
+    return {
+      id: `region-${constellation.id}`,
+      type: "constellationRegion",
+      position: slot.position,
+      data: {
+        regionId: constellation.id,
+        themeKey,
+        label: constellation.displayTitle || constellation.title,
+        icon: slot.icon,
+        width: slot.width,
+        height: slot.height,
+        description: constellation.description,
+        question: constellation.question,
+      },
+      draggable: false,
+      selectable: false,
+      focusable: false,
+      zIndex: 0,
+    };
+  });
+
+  return { nodes: regionNodes, edges: [] };
 }

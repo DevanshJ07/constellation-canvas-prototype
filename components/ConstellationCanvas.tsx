@@ -32,7 +32,7 @@ import EvolutionEventModal from "@/components/EvolutionEventModal";
 import RippleModal from "@/components/RippleModal";
 import DiscoveryPanel from "@/components/DiscoveryPanel";
 import WorldSidebar from "@/components/WorldSidebar";
-import { buildConstellationLayout } from "@/lib/layoutNodes";
+import { buildConstellationLayout, buildArchitectureOverviewLayout } from "@/lib/layoutNodes";
 import { MOCK_DISCOVERIES } from "@/lib/mockDiscoveries";
 import {
   CONSTELLATION_REGIONS,
@@ -83,10 +83,28 @@ import type {
   WorldInterpretation,
 } from "@/lib/dynamicConstellations";
 import DynamicWorldOverview from "@/components/DynamicWorldOverview";
+import ArchitecturePreview from "@/components/ArchitecturePreview";
+import {
+  buildArchitectureBranches,
+  canvasNodeToAiDiscovery,
+  getAgentNameForConstellation,
+  registerCanvasWorldModel,
+  registerReasonedNodeMeta,
+  type CanvasConstellation,
+  type CanvasWorldModel,
+} from "@/lib/worldBrain/mapArchitectureToCanvas";
+import {
+  mapConstellationReasonerOutputToBranches,
+  reasonedBranchToAiDiscovery,
+  type ReasonedNodePanelMeta,
+} from "@/lib/worldBrain/mapReasonedNodesToBranches";
+import type { ConstellationReasonerOutput } from "@/lib/worldBrain/constellationReasonerTypes";
 import { getAgentReasoning } from "@/lib/agentReasoning";
 import { resolveNodeMeta, resolvePanelItem } from "@/lib/worldNodes";
 import {
   computeFutureYPositions,
+  computeOrbitalPositions,
+  CONSTELLATION_ORBIT_CENTER,
   labelPriority,
   resolveLabelOffsets,
 } from "@/lib/graphLayout";
@@ -147,10 +165,12 @@ const nodeTypes = {
 
 type ConstellationCanvasProps = {
   worldSeed: string;
+  worldPurpose?: string | null;
   dynamicConstellations?: DynamicConstellation[];
   worldInterpretation?: WorldInterpretation | null;
   usedFallback?: boolean;
   fallbackReason?: string;
+  architectureCanvasModel?: CanvasWorldModel | null;
 };
 
 function applyLabelOffsets(
@@ -213,10 +233,12 @@ function getWorldDescendantIds(id: string): string[] {
 
 export default function ConstellationCanvas({
   worldSeed,
+  worldPurpose = null,
   dynamicConstellations = [],
   worldInterpretation = null,
   usedFallback = false,
   fallbackReason,
+  architectureCanvasModel = null,
 }: ConstellationCanvasProps) {
   const [navState, setNavState] = useState<NavState>({ mode: "overview" });
   const [selectedItem, setSelectedItem] = useState<PanelItem | null>(null);
@@ -264,6 +286,169 @@ export default function ConstellationCanvas({
   const [constellationAutoLoading, setConstellationAutoLoading] = useState(false);
   // Maps AI node IDs → dynamic constellation ID (for canon thread grouping)
   const [nodeConstellationMap, setNodeConstellationMap] = useState<Record<string, string>>({});
+  const architectureSeededRef = useRef(false);
+  const [archDebugOpen, setArchDebugOpen] = useState(false);
+  const [reasonedConstellations, setReasonedConstellations] = useState<
+    Record<string, ConstellationReasonerOutput>
+  >({});
+  const [reasonedNodeDetails, setReasonedNodeDetails] = useState<
+    Record<string, ReasonedNodePanelMeta>
+  >({});
+  const [isReasoningConstellation, setIsReasoningConstellation] = useState(false);
+  const [reasoningConstellationId, setReasoningConstellationId] = useState<
+    string | null
+  >(null);
+  const [constellationReasonerErrors, setConstellationReasonerErrors] = useState<
+    Record<string, string>
+  >({});
+  const reasonedConstellationsRef = useRef(reasonedConstellations);
+  const reasonerRequestGenRef = useRef<Record<string, number>>({});
+  const navStateRef = useRef(navState);
+
+  useEffect(() => {
+    reasonedConstellationsRef.current = reasonedConstellations;
+  }, [reasonedConstellations]);
+
+  useEffect(() => {
+    navStateRef.current = navState;
+  }, [navState]);
+
+  /** Card overlay only for legacy dynamic constellations — architecture uses spatial canvas. */
+  const showOverviewOverlay =
+    navState.mode === "overview" &&
+    !architectureCanvasModel &&
+    dynamicConstellations.length > 0;
+
+  useEffect(() => {
+    console.log("Using architecture canvas model:", Boolean(architectureCanvasModel));
+    console.log(
+      "Canvas constellations:",
+      architectureCanvasModel?.constellations?.map((c) => c.displayTitle || c.title),
+    );
+  }, [architectureCanvasModel]);
+
+  useEffect(() => {
+    if (!architectureCanvasModel || architectureSeededRef.current) return;
+    architectureSeededRef.current = true;
+
+    const { branches, nodeConstellationMap: archNodeMap } =
+      buildArchitectureBranches(architectureCanvasModel);
+
+    registerCanvasWorldModel(architectureCanvasModel);
+
+    setAiBranches((prev) => ({ ...prev, ...branches }));
+    setNodeConstellationMap((prev) => ({ ...prev, ...archNodeMap }));
+    setInitializedConstellationIds(
+      (prev) =>
+        new Set([
+          ...prev,
+          ...architectureCanvasModel.constellations.map((c) => c.id),
+        ]),
+    );
+  }, [architectureCanvasModel]);
+
+  const applyReasonedOutput = useCallback(
+    (constellationId: string, output: ConstellationReasonerOutput) => {
+      if (!architectureCanvasModel) return;
+
+      const { branches, nodeConstellationMap: newMap, panelMeta } =
+        mapConstellationReasonerOutputToBranches(
+          output,
+          architectureCanvasModel,
+          constellationId,
+        );
+
+      registerReasonedNodeMeta(
+        output.startingNodes.map((n) => ({
+          id: n.id,
+          displayTitle: n.displayTitle,
+          nodeType: n.nodeType,
+        })),
+      );
+
+      setReasonedNodeDetails((prev) => ({ ...prev, ...panelMeta }));
+      setNodeConstellationMap((prev) => ({ ...prev, ...newMap }));
+
+      const ns = navStateRef.current;
+      if (ns.mode === "discovery" && ns.regionId === constellationId) {
+        setAiBranches((prev) => ({ ...prev, [constellationId]: branches }));
+      }
+    },
+    [architectureCanvasModel],
+  );
+
+  const fetchReasonerForConstellation = useCallback(
+    async (constellation: CanvasConstellation) => {
+      if (!architectureCanvasModel) return;
+
+      const id = constellation.id;
+      const cached = reasonedConstellationsRef.current[id];
+      if (cached) {
+        applyReasonedOutput(id, cached);
+        return;
+      }
+
+      const nextGen = (reasonerRequestGenRef.current[id] ?? 0) + 1;
+      reasonerRequestGenRef.current[id] = nextGen;
+
+      setIsReasoningConstellation(true);
+      setReasoningConstellationId(id);
+      setConstellationReasonerErrors((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+
+      try {
+        const res = await fetch("/api/world/constellation-reasoner", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            canvasModel: architectureCanvasModel,
+            selectedConstellationId: id,
+            purpose: worldPurpose ?? undefined,
+            worldPrompt: worldSeed,
+            architectureSummary: architectureCanvasModel.worldSummary,
+            existingCanon: [],
+          }),
+        });
+
+        const data = (await res.json()) as {
+          success?: boolean;
+          output?: ConstellationReasonerOutput;
+          error?: string;
+        };
+
+        if (reasonerRequestGenRef.current[id] !== nextGen) return;
+
+        if (!data.success || !data.output) {
+          setConstellationReasonerErrors((prev) => ({
+            ...prev,
+            [id]: "Could not deepen this constellation yet. Showing initial nodes.",
+          }));
+          return;
+        }
+
+        setReasonedConstellations((prev) => ({ ...prev, [id]: data.output! }));
+        applyReasonedOutput(id, data.output);
+      } catch {
+        if (reasonerRequestGenRef.current[id] === nextGen) {
+          setConstellationReasonerErrors((prev) => ({
+            ...prev,
+            [id]: "Could not deepen this constellation yet. Showing initial nodes.",
+          }));
+        }
+      } finally {
+        if (reasonerRequestGenRef.current[id] === nextGen) {
+          setIsReasoningConstellation(false);
+          setReasoningConstellationId((current) =>
+            current === id ? null : current,
+          );
+        }
+      }
+    },
+    [architectureCanvasModel, worldSeed, worldPurpose, applyReasonedOutput],
+  );
 
   const handleAddTruth = useCallback((truth: string) => {
     setCreatorTruths((prev) => [...prev, truth]);
@@ -316,6 +501,16 @@ export default function ConstellationCanvas({
     [worldSeed],
   );
 
+  const architectureLayout = useMemo(
+    () =>
+      architectureCanvasModel
+        ? buildArchitectureOverviewLayout(architectureCanvasModel)
+        : null,
+    [architectureCanvasModel],
+  );
+
+  const overviewLayout = architectureLayout ?? baseLayout;
+
   useEffect(() => {
     const t = window.setTimeout(() => {
       rfInstance.current?.fitView({
@@ -339,23 +534,52 @@ export default function ConstellationCanvas({
     const focusedId = trail[trail.length - 1];
     const pastCount = trail.length - 1;
 
+    const isConstellationRootView =
+      trail.length === 1 &&
+      Boolean(
+        architectureCanvasModel?.constellations.some((c) => c.id === focusedId) ||
+          dynamicConstellations.some((c) => c.id === focusedId),
+      );
+
+    const orbitCenter = CONSTELLATION_ORBIT_CENTER;
+
     const allFlatBranches = Object.values(aiBranches).flat();
 
     // PAST + CURRENT: walked path
     trail.forEach((id, i) => {
       const staticMeta = resolveNodeMeta(id);
-      const dynConst = staticMeta ? null : dynamicConstellations.find((c) => c.id === id);
-      const aiBranch = (staticMeta || dynConst) ? null : allFlatBranches.find((b) => b.id === id);
+      const archConst = architectureCanvasModel?.constellations.find((c) => c.id === id);
+      const archNode = architectureCanvasModel?.nodes.find((n) => n.id === id);
+      const dynConst = staticMeta || archConst || archNode ? null : dynamicConstellations.find((c) => c.id === id);
+      const aiBranch = (staticMeta || dynConst || archConst || archNode) ? null : allFlatBranches.find((b) => b.id === id);
       const meta = staticMeta
+        ?? (archNode
+          ? {
+              title: archNode.title.trim() || "Untitled Branch",
+              category: archNode.nodeType,
+            }
+          : null)
+        ?? (archConst
+          ? {
+              title: archConst.displayTitle || archConst.title,
+              category: archConst.displayTitle || "Constellation",
+            }
+          : null)
         ?? (dynConst ? { title: dynConst.title, category: dynConst.agentName } : null)
         ?? (aiBranch ? { title: aiBranch.title || "Untitled Branch", category: aiBranch.domain } : null);
       const isFocused = i === trail.length - 1;
-      const x = isFocused ? 0 : (i - pastCount) * PAST_STEP_X;
+      const x = isFocused
+        ? isConstellationRootView
+          ? orbitCenter.x
+          : 0
+        : (i - pastCount) * PAST_STEP_X +
+          (isConstellationRootView ? orbitCenter.x : 0);
+      const y = isFocused && isConstellationRootView ? orbitCenter.y : 0;
 
       nodes.push({
         id,
         type: "trailNode",
-        position: { x, y: 0 },
+        position: { x, y },
         data: {
           title: meta?.title || "Untitled Branch",
           category: meta?.category,
@@ -414,21 +638,31 @@ export default function ConstellationCanvas({
       ...consIds.map((id) => ({ id, kind: "consequence" as const, ai: false as const, branch: null })),
       ...aiFutures.map((b) => ({ id: b.id, kind: "direction" as const, ai: true as const, branch: b })),
     ];
+
+    const orbitalPositions = isConstellationRootView
+      ? computeOrbitalPositions(futureIds.length, {
+          centerX: orbitCenter.x,
+          centerY: orbitCenter.y,
+          phaseSeed: focusedId,
+        })
+      : null;
     const yPositions = computeFutureYPositions(futureIds.length, FUTURE_ROW_H);
 
     futureIds.forEach((item, j) => {
       const { id, kind, ai, branch: aiBranch } = item;
-      const y = yPositions[j] ?? 0;
+      const position = orbitalPositions
+        ? (orbitalPositions[j] ?? { x: FUTURE_X, y: 0 })
+        : { x: FUTURE_X, y: yPositions[j] ?? 0 };
       const meta = resolveNodeMeta(id);
 
       nodes.push({
         id,
         type: "trailNode",
-        position: { x: FUTURE_X, y },
+        position,
         data: {
           title: aiBranch
-            ? (nodeOverrides[aiBranch.id]?.title ?? aiBranch.title)
-            : (nodeOverrides[id]?.title ?? meta?.title ?? id),
+            ? (nodeOverrides[aiBranch.id]?.title ?? (aiBranch.title || "Untitled Branch"))
+            : (nodeOverrides[id]?.title ?? meta?.title ?? "Untitled Branch"),
           category: aiBranch
             ? `✦ ${aiBranch.sourceAgent ?? "Agent-shaped"}`
             : (meta?.category ?? (kind === "consequence" ? "Consequence" : undefined)),
@@ -460,7 +694,7 @@ export default function ConstellationCanvas({
     });
 
     return { nodes, edges };
-  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds, aiBranches, weakenedIds, nodeOverrides, dynamicConstellations]);
+  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds, aiBranches, weakenedIds, nodeOverrides, dynamicConstellations, architectureCanvasModel]);
 
   // ── Canon layout: living evolution tree ─────────────────────────────────────
   const worldState = useMemo(
@@ -511,9 +745,15 @@ export default function ConstellationCanvas({
       buildCanonThreads(
         acceptedIds,
         nodeConstellationMap,
-        dynamicConstellations.map((c) => ({ id: c.id, label: c.title })),
+        [
+          ...dynamicConstellations.map((c) => ({ id: c.id, label: c.title })),
+          ...(architectureCanvasModel?.constellations.map((c) => ({
+            id: c.id,
+            label: c.displayTitle || c.title,
+          })) ?? []),
+        ],
       ),
-    [acceptedIds, nodeConstellationMap, dynamicConstellations],
+    [acceptedIds, nodeConstellationMap, dynamicConstellations, architectureCanvasModel],
   );
 
   // ── Nodes ─────────────────────────────────────────────────────────────────
@@ -529,7 +769,7 @@ export default function ConstellationCanvas({
       return injectRippleStates(base, rippleStates);
     }
 
-    return baseLayout.nodes.map((node) => {
+    return overviewLayout.nodes.map((node) => {
       if (node.type === "constellationRegion") {
         const regionId = node.id.replace("region-", "") as string;
 
@@ -537,21 +777,38 @@ export default function ConstellationCanvas({
 
         let vitalityDots: VitalityDot[] | undefined;
         if (mode === "overview") {
-          vitalityDots = MOCK_DISCOVERIES.filter(
-            (d) => DISCOVERY_REGION_MAP[d.id] === regionId,
-          ).map((d) => ({
-            revealed: true,
-            decision: decisions[d.id] ?? "pending",
-          }));
+          if (architectureCanvasModel) {
+            vitalityDots = architectureCanvasModel.nodes
+              .filter((n) => n.constellationId === regionId)
+              .map((n) => ({
+                revealed: true,
+                decision: decisions[n.id] ?? "pending",
+              }));
+          } else {
+            vitalityDots = MOCK_DISCOVERIES.filter(
+              (d) => DISCOVERY_REGION_MAP[d.id] === regionId,
+            ).map((d) => ({
+              revealed: true,
+              decision: decisions[d.id] ?? "pending",
+            }));
+          }
         }
 
         const regionDef = CONSTELLATION_REGIONS.find((r) => r.id === regionId);
+        const archConst = architectureCanvasModel?.constellations.find(
+          (c) => c.id === regionId,
+        );
 
         return {
           ...node,
           hidden,
           selectable: mode === "overview",
-          data: { ...node.data, icon: regionDef?.icon ?? "", vitalityDots },
+          data: {
+            ...node.data,
+            icon: regionDef?.icon ?? (node.data as { icon?: string }).icon ?? "✦",
+            label: archConst?.displayTitle ?? (node.data as { label?: string }).label,
+            vitalityDots,
+          },
         };
       }
 
@@ -582,13 +839,14 @@ export default function ConstellationCanvas({
   }, [
     navState,
     trailLayout.nodes,
-    baseLayout.nodes,
+    overviewLayout.nodes,
     decisions,
     revealedIds,
     justRevealedId,
     justAcceptedId,
     selectedNodeId,
     rippleStates,
+    architectureCanvasModel,
   ]);
 
   // ── Edges ─────────────────────────────────────────────────────────────────
@@ -666,25 +924,67 @@ export default function ConstellationCanvas({
       // Check if this is an AI-generated branch
       const allAiBranches = Object.values(aiBranches).flat();
       const aiBranch = allAiBranches.find((b) => b.id === targetId);
+      const archNode = architectureCanvasModel?.nodes.find((n) => n.id === targetId);
+      if (archNode) {
+        const constellation = architectureCanvasModel!.constellations.find(
+          (c) => c.id === archNode.constellationId,
+        );
+        const agentName = constellation
+          ? getAgentNameForConstellation(architectureCanvasModel!, constellation)
+          : "Reasoning Agent";
+        setSelectedItem({
+          kind: "ai-discovery",
+          discovery: canvasNodeToAiDiscovery(archNode, agentName),
+        });
+        return;
+      }
       if (aiBranch) {
-        const aiDiscovery: AiDiscovery = {
-          id: aiBranch.id,
-          title: aiBranch.title || "Untitled Branch",
-          description: aiBranch.description,
-          category: aiBranch.domain,
-          whyItMatters: aiBranch.whyItMatters,
-          sourceAgent: aiBranch.sourceAgent,
-          rippleHint: aiBranch.rippleHint,
-          generated: true,
-        };
-        setSelectedItem({ kind: "ai-discovery", discovery: aiDiscovery });
+        setSelectedItem({
+          kind: "ai-discovery",
+          discovery: reasonedBranchToAiDiscovery(
+            aiBranch,
+            reasonedNodeDetails[aiBranch.id],
+          ),
+        });
         return;
       }
 
       const item = resolvePanelItem(targetId);
       if (item) setSelectedItem(item);
     },
-    [aiBranches],
+    [aiBranches, architectureCanvasModel, reasonedNodeDetails],
+  );
+
+  /** Enter exploration mode for an architecture constellation (pre-seeded starting nodes). */
+  const handleArchitectureConstellationEnter = useCallback(
+    (constellation: CanvasConstellation) => {
+      const displayTitle = constellation.displayTitle || constellation.title;
+      setConstellationReasonerErrors((prev) => {
+        const next = { ...prev };
+        delete next[constellation.id];
+        return next;
+      });
+      setNavState({
+        mode: "discovery",
+        discoveryId: constellation.id,
+        regionId: constellation.id,
+        discoveryTitle: displayTitle,
+        trail: [constellation.id],
+      });
+      setSelectedItem({
+        kind: "ai-discovery",
+        discovery: {
+          id: constellation.id,
+          title: displayTitle,
+          description: constellation.description,
+          category: "Constellation",
+          whyItMatters: constellation.question,
+          generated: true,
+        },
+      });
+      void fetchReasonerForConstellation(constellation);
+    },
+    [fetchReasonerForConstellation],
   );
 
   // ── Interaction ───────────────────────────────────────────────────────────
@@ -692,9 +992,18 @@ export default function ConstellationCanvas({
     (_event: React.MouseEvent, node: Node) => {
       const { mode } = navState;
 
-      // Overview: clicking a region enters the trail at that region's virtual root
+      // Overview: clicking a region enters that constellation's trail
       if (mode === "overview" && node.type === "constellationRegion") {
         const regionId = node.id.replace("region-", "") as string;
+
+        const archConst = architectureCanvasModel?.constellations.find(
+          (c) => c.id === regionId,
+        );
+        if (archConst) {
+          handleArchitectureConstellationEnter(archConst);
+          return;
+        }
+
         const rootId = (REGION_VIRTUAL_ROOTS as Record<string, string>)[regionId] ?? regionId;
         const item = resolvePanelItem(rootId);
         const meta = resolveNodeMeta(rootId);
@@ -753,7 +1062,7 @@ export default function ConstellationCanvas({
         setSelectedItem({ kind: "discovery", discovery: data.discovery });
       }
     },
-    [navState, hiddenIds, revealedIds, navigateTrail],
+    [navState, hiddenIds, revealedIds, navigateTrail, architectureCanvasModel, handleArchitectureConstellationEnter],
   );
 
   const onPaneClick = useCallback(() => setSelectedItem(null), []);
@@ -813,7 +1122,7 @@ export default function ConstellationCanvas({
 
       if (action === "accept") {
         const aiTitle = selectedItem.kind === "ai-discovery" ? selectedItem.discovery.title : null;
-        const nodeTitle = nodeOverrides[id]?.title ?? aiTitle ?? resolveNodeMeta(id)?.title ?? id;
+        const nodeTitle = nodeOverrides[id]?.title ?? aiTitle ?? getDisplayTitle(id);
         const prevAccepted = acceptedIds;
         const nextAccepted = prevAccepted.includes(id)
           ? prevAccepted
@@ -952,10 +1261,15 @@ export default function ConstellationCanvas({
     const allAiBranches = Object.values(aiBranches).flat();
     const steps = navState.trail.map((id, i, arr) => {
       const aiBranch = allAiBranches.find((b) => b.id === id);
+      const archNode = architectureCanvasModel?.nodes.find((n) => n.id === id);
+      const archConst = architectureCanvasModel?.constellations.find((c) => c.id === id);
       const dynConst = dynamicConstellations.find((c) => c.id === id);
       return {
         id,
         title: aiBranch?.title
+          || archNode?.title.trim()
+          || archConst?.displayTitle
+          || archConst?.title
           || dynConst?.title
           || resolveNodeMeta(id)?.title
           || "Untitled Branch",
@@ -971,7 +1285,7 @@ export default function ConstellationCanvas({
       },
       ...steps,
     ];
-  }, [navState, worldSeed, aiBranches, dynamicConstellations]);
+  }, [navState, worldSeed, aiBranches, dynamicConstellations, architectureCanvasModel]);
 
   const potentialConsequences = useMemo(() => {
     if (!selectedNodeId) return [];
@@ -983,11 +1297,48 @@ export default function ConstellationCanvas({
     if (item) setSelectedItem(item);
   }, []);
 
-  /** Resolve node meta for static nodes OR dynamic constellation roots. */
+  /** Resolve node meta for static nodes, architecture nodes, or dynamic constellation roots. */
   const resolveNodeMetaExt = useCallback(
     (id: string) => {
       const staticMeta = resolveNodeMeta(id);
       if (staticMeta) return staticMeta;
+
+      const archNode = architectureCanvasModel?.nodes.find((n) => n.id === id);
+      if (archNode) {
+        const constellation = architectureCanvasModel!.constellations.find(
+          (c) => c.id === archNode.constellationId,
+        );
+        const agentName = constellation
+          ? getAgentNameForConstellation(architectureCanvasModel!, constellation)
+          : "Reasoning Agent";
+        return {
+          title: archNode.title.trim() || "Untitled Branch",
+          category: archNode.nodeType,
+          description: archNode.description,
+          whyItMatters: archNode.whyPromising,
+        };
+      }
+
+      const reasonedMeta = reasonedNodeDetails[id];
+      if (reasonedMeta) {
+        return {
+          title: reasonedMeta.displayTitle,
+          category: "Reasoned Node",
+          description: reasonedMeta.fullTitle,
+          whyItMatters: reasonedMeta.creativePurpose,
+        };
+      }
+
+      const archConst = architectureCanvasModel?.constellations.find((c) => c.id === id);
+      if (archConst) {
+        return {
+          title: archConst.displayTitle || archConst.title,
+          category: archConst.displayTitle || "Constellation",
+          description: archConst.description,
+          whyItMatters: archConst.question,
+        };
+      }
+
       const dynConst = dynamicConstellations.find((c) => c.id === id);
       if (dynConst) {
         return {
@@ -999,7 +1350,12 @@ export default function ConstellationCanvas({
       }
       return null;
     },
-    [dynamicConstellations],
+    [architectureCanvasModel, dynamicConstellations, reasonedNodeDetails],
+  );
+
+  const getDisplayTitle = useCallback(
+    (id: string) => resolveNodeMetaExt(id)?.title ?? "Untitled Branch",
+    [resolveNodeMetaExt],
   );
 
   /** Auto-generate initial branches for a dynamic constellation root node. */
@@ -1041,7 +1397,7 @@ export default function ConstellationCanvas({
         existingFutureNodes: [],
         existingSiblingNodes: [],
         rejectedIdeas: [],
-        establishedTruths: acceptedIds.map((aid) => resolveNodeMeta(aid)?.title ?? aid),
+        establishedTruths: acceptedIds.map((aid) => getDisplayTitle(aid)),
       };
 
       try {
@@ -1153,10 +1509,16 @@ export default function ConstellationCanvas({
         navState.mode === "discovery" || navState.mode === "constellation"
           ? dynamicConstellations.find((c) => c.id === navState.regionId)
           : undefined;
+      const activeArchitectureConstellation =
+        navState.mode === "discovery" || navState.mode === "constellation"
+          ? architectureCanvasModel?.constellations.find((c) => c.id === navState.regionId)
+          : undefined;
       const activeDomain = activeConstellation?.agentName
-        ?? (navState.mode === "discovery" || navState.mode === "constellation"
-          ? navState.regionId
-          : "");
+        ?? (activeArchitectureConstellation && architectureCanvasModel
+          ? getAgentNameForConstellation(architectureCanvasModel, activeArchitectureConstellation)
+          : (navState.mode === "discovery" || navState.mode === "constellation"
+            ? navState.regionId
+            : ""));
 
       // Build the existing future node list for adaptation analysis
       const existingFutureNodes: ExistingNodeInfo[] = [
@@ -1185,13 +1547,14 @@ export default function ConstellationCanvas({
 
       const rejectedTitles = Object.entries(decisions)
         .filter(([, d]) => d === "rejected")
-        .map(([rid]) => resolveNodeMeta(rid)?.title ?? rid);
+        .map(([rid]) => getDisplayTitle(rid));
 
-      const establishedTitles = acceptedIds
-        .map((aid) => resolveNodeMeta(aid)?.title ?? aid);
+      const establishedTitles = acceptedIds.map((aid) => getDisplayTitle(aid));
 
       // If inside a dynamic constellation, include its focus questions as extra context
-      const constellationContext = activeConstellation
+      const constellationContext = activeArchitectureConstellation && architectureCanvasModel
+        ? `\n\nAgent lens: ${getAgentNameForConstellation(architectureCanvasModel, activeArchitectureConstellation)}\nFocus: ${activeArchitectureConstellation.description}\nKey questions: ${activeArchitectureConstellation.question}`
+        : activeConstellation
         ? `\n\nAgent lens: ${activeConstellation.agentName}\nFocus: ${activeConstellation.purpose}\nKey questions: ${activeConstellation.focusQuestions.join("; ")}`
         : "";
 
@@ -1250,10 +1613,13 @@ export default function ConstellationCanvas({
             [id]: [...(prev[id] ?? []), ...newBranches],
           }));
           // Track dynamic constellation membership for canon grouping
-          if (activeConstellation) {
+          if (activeConstellation || activeArchitectureConstellation) {
             setNodeConstellationMap((prev) => {
               const next = { ...prev };
-              for (const b of newBranches) next[b.id] = activeConstellation.id;
+              const constelId = activeConstellation?.id ?? activeArchitectureConstellation?.id;
+              if (constelId) {
+                for (const b of newBranches) next[b.id] = constelId;
+              }
               return next;
             });
           }
@@ -1378,6 +1744,8 @@ export default function ConstellationCanvas({
       acceptedIds,
       nodeOverrides,
       dynamicConstellations,
+      architectureCanvasModel,
+      getDisplayTitle,
     ],
   );
 
@@ -1398,7 +1766,7 @@ export default function ConstellationCanvas({
       navState.mode === "discovery"
         ? journeySteps.map((s) => s.title)
         : selectedNodeId
-          ? [worldSeed, resolveNodeMeta(selectedNodeId)?.title ?? selectedNodeId]
+          ? [worldSeed, getDisplayTitle(selectedNodeId)]
           : [worldSeed];
 
     return buildAgentSelectInput({
@@ -1438,11 +1806,11 @@ export default function ConstellationCanvas({
         creatorTruths={creatorTruths}
         dynamicConstellations={dynamicConstellations}
       />
-      {!(navState.mode === "overview" && dynamicConstellations.length > 0) && (
+      {!(showOverviewOverlay) && (
         <Breadcrumb navState={navState} onNavigate={handleNavigate} />
       )}
       <WorldPulse shift={latestShift} nonce={pulseNonce} />
-      {!(navState.mode === "overview" && dynamicConstellations.length > 0) && (
+      {!(showOverviewOverlay) && (
         <WorldWhisper
           onSubmit={handleAddTruth}
           emphasized={navState.mode === "overview"}
@@ -1470,6 +1838,33 @@ export default function ConstellationCanvas({
           </div>
         </div>
       )}
+      {navState.mode === "discovery" &&
+        architectureCanvasModel &&
+        isReasoningConstellation &&
+        reasoningConstellationId === navState.regionId && (
+          <div
+            className="pointer-events-none absolute z-20 flex justify-center"
+            style={{ left: "176px", right: "320px", top: "78px" }}
+          >
+            <span className="rounded-full border border-violet-500/40 bg-violet-950/60 px-4 py-1.5 text-[11px] text-violet-200 shadow-[0_0_20px_rgba(139,92,246,0.2)]">
+              Reasoning inside {navState.discoveryTitle}…
+            </span>
+          </div>
+        )}
+      {navState.mode === "discovery" &&
+        architectureCanvasModel &&
+        navState.regionId &&
+        constellationReasonerErrors[navState.regionId] &&
+        !isReasoningConstellation && (
+          <div
+            className="pointer-events-none absolute z-20 flex justify-center"
+            style={{ left: "176px", right: "320px", top: "78px" }}
+          >
+            <span className="rounded-full border border-amber-500/30 bg-amber-950/50 px-4 py-1.5 text-[11px] text-amber-200/90">
+              {constellationReasonerErrors[navState.regionId]}
+            </span>
+          </div>
+        )}
       {navState.mode === "canon" && (
         <>
           <CanonUniverseOverlay
@@ -1515,8 +1910,25 @@ export default function ConstellationCanvas({
         panelInset={panelInset}
       />
       )}
-      {/* Dynamic World Overview: replaces the ReactFlow canvas when constellations exist */}
-      {navState.mode === "overview" && dynamicConstellations.length > 0 && (
+      {architectureCanvasModel && (
+        <button
+          type="button"
+          onClick={() => setArchDebugOpen((v) => !v)}
+          className="absolute bottom-4 z-20 rounded border border-slate-800/80 bg-slate-950/90 px-2.5 py-1 text-[9px] uppercase tracking-[0.14em] text-slate-600 transition hover:border-slate-700 hover:text-slate-400"
+          style={{ left: "184px" }}
+        >
+          {archDebugOpen ? "Hide architecture debug" : "Architecture debug"}
+        </button>
+      )}
+      {architectureCanvasModel && archDebugOpen && (
+        <div
+          className="absolute bottom-12 z-20 max-h-[42vh] overflow-y-auto rounded-lg border border-slate-800/80 bg-slate-950/95 p-4 shadow-xl"
+          style={{ left: "184px", right: panelInset > 0 ? `${panelInset + 16}px` : "16px" }}
+        >
+          <ArchitecturePreview model={architectureCanvasModel} embedded />
+        </div>
+      )}
+      {navState.mode === "overview" && !architectureCanvasModel && dynamicConstellations.length > 0 && (
         <div className="absolute inset-y-0 right-0" style={{ left: "176px" }}>
           <DynamicWorldOverview
             constellations={dynamicConstellations}
@@ -1530,7 +1942,7 @@ export default function ConstellationCanvas({
         </div>
       )}
 
-      {navState.mode !== "canon" && !(navState.mode === "overview" && dynamicConstellations.length > 0) && (
+      {navState.mode !== "canon" && !showOverviewOverlay && (
       <div
         className="absolute inset-y-0 right-0"
         style={{ left: "176px" }}
