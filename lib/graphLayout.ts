@@ -17,9 +17,9 @@ export function computeFutureYPositions(count: number, baseGap = 72): number[] {
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
 /** Tighter orbit defaults for node expansion (vs constellation-level layout). */
-export const NODE_EXPANSION_BASE_RADIUS = 180;
-export const NODE_EXPANSION_RADIUS_STEP = 28;
-export const NODE_EXPANSION_MIN_PARENT_DISTANCE = 140;
+export const NODE_EXPANSION_BASE_RADIUS = 150;
+export const NODE_EXPANSION_RADIUS_STEP = 24;
+export const NODE_EXPANSION_MIN_PARENT_DISTANCE = 120;
 export const NODE_EXPANSION_MIN_SIBLING_DISTANCE = 72;
 
 export type OrbitalLayoutOptions = {
@@ -55,8 +55,8 @@ export function computeOrbitalPositions(
   const {
     centerX = -110,
     centerY = 0,
-    baseRadius = 250,
-    radiusStep = 44,
+    baseRadius = 210,
+    radiusStep = 36,
     phaseSeed = "",
   } = options;
 
@@ -266,4 +266,93 @@ export function labelPriority(
   if (journeyPhase === "future") return 60;
   if (journeyPhase === "past") return 40;
   return 50;
+}
+
+export type LayoutBounds = {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+};
+
+export type FitLayoutToBoundsOptions = {
+  padding?: number;
+  minScale?: number;
+  maxScale?: number;
+};
+
+/** Default safe area for local constellation exploration (React Flow coords). */
+export const DISCOVERY_LAYOUT_BOUNDS: LayoutBounds = {
+  minX: -400,
+  maxX: 360,
+  minY: -240,
+  maxY: 200,
+};
+
+/**
+ * Scales and recenters node positions to fit within bounds.
+ * Preserves relative arrangement; deterministic, no randomness.
+ */
+export function fitLayoutToBounds(
+  positions: Record<string, { x: number; y: number }>,
+  bounds: LayoutBounds,
+  options: FitLayoutToBoundsOptions = {},
+): Record<string, { x: number; y: number }> {
+  const ids = Object.keys(positions);
+  if (ids.length === 0) return { ...positions };
+
+  const padding = options.padding ?? 28;
+  const minScale = options.minScale ?? 0.38;
+  const maxScale = options.maxScale ?? 1;
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+
+  for (const id of ids) {
+    const p = positions[id]!;
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  }
+
+  const boxW = Math.max(maxX - minX, 1);
+  const boxH = Math.max(maxY - minY, 1);
+  const availW = bounds.maxX - bounds.minX - padding * 2;
+  const availH = bounds.maxY - bounds.minY - padding * 2;
+
+  let scale = Math.min(availW / boxW, availH / boxH, maxScale);
+  if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+  scale = Math.max(minScale, Math.min(maxScale, scale));
+
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const targetCx = (bounds.minX + bounds.maxX) / 2;
+  const targetCy = (bounds.minY + bounds.maxY) / 2;
+
+  const needsScale = boxW > availW || boxH > availH;
+
+  const result: Record<string, { x: number; y: number }> = {};
+  for (const id of ids) {
+    const p = positions[id]!;
+    const effectiveScale = needsScale ? scale : 1;
+    result[id] = {
+      x: targetCx + (p.x - cx) * effectiveScale,
+      y: targetCy + (p.y - cy) * effectiveScale,
+    };
+  }
+  return result;
+}
+
+/** Applies fitted positions back onto React Flow trail nodes. */
+export function applyPositionMapToNodes<T extends { id: string; position: { x: number; y: number } }>(
+  nodes: T[],
+  positions: Record<string, { x: number; y: number }>,
+): T[] {
+  return nodes.map((n) => ({
+    ...n,
+    position: positions[n.id] ?? n.position,
+  }));
 }

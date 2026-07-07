@@ -24,6 +24,8 @@ export type TrailNodeData = {
   aiGenerated?: boolean;
   weakened?: boolean;
   nodeModified?: boolean;
+  /** Constellation accent for ring/glow (CSS color). */
+  accentColor?: string;
 };
 
 const SIZE: Record<TrailRole, number> = {
@@ -69,6 +71,7 @@ function TrailNode({ data, selected }: NodeProps) {
     aiGenerated,
     weakened,
     nodeModified,
+    accentColor,
   } = data as TrailNodeData;
 
   const size = isCanonPath ? CANON_SIZE[role] : SIZE[role];
@@ -85,6 +88,13 @@ function TrailNode({ data, selected }: NodeProps) {
     ? `animate-ripple-${rippleState}`
     : "";
 
+  const hasAccent =
+    Boolean(accentColor) &&
+    !rippleState &&
+    !isAccepted &&
+    !isSaved &&
+    decision !== "rejected";
+
   const ring = rippleState === "supported"
     ? "border-emerald-400/80 bg-emerald-500/15"
     : rippleState === "contradicted"
@@ -97,8 +107,10 @@ function TrailNode({ data, selected }: NodeProps) {
             ? "border-teal-400/70 bg-teal-500/12"
             : isSaved
               ? "border-sky-300/70 bg-sky-500/12"
-              : isFocused || canonLayer === "origin"
-                ? "border-violet-300/80 bg-violet-500/18"
+              : hasAccent
+                ? ""
+                : isFocused || canonLayer === "origin"
+                  ? "border-violet-300/80 bg-violet-500/18"
         : canonLayer === "theme"
           ? "border-amber-400/55 bg-amber-500/10"
           : canonLayer === "major_truth" || canonLayer === "domain_truth"
@@ -114,6 +126,14 @@ function TrailNode({ data, selected }: NodeProps) {
                   : isCanonPath
                     ? "border-violet-300/60 bg-violet-500/10"
                     : "border-slate-500/45 bg-slate-700/20";
+
+  const accentRingStyle = hasAccent
+    ? {
+        borderColor: accentColor,
+        backgroundColor: `${accentColor}22`,
+        boxShadow: `0 0 16px ${accentColor}55`,
+      }
+    : undefined;
 
   const glow = rippleState
     ? "" // handled by animate-ripple-* classes
@@ -139,11 +159,17 @@ function TrailNode({ data, selected }: NodeProps) {
       ? "bg-teal-300"
       : isSaved
         ? "bg-sky-300"
-        : isFocused
-          ? "bg-violet-300"
-          : isCanonPath
-            ? "bg-violet-300/80"
-            : "bg-slate-300/70";
+        : hasAccent
+          ? ""
+          : isFocused
+            ? "bg-violet-300"
+            : isCanonPath
+              ? "bg-violet-300/80"
+              : "bg-slate-300/70";
+
+  const coreStyle = hasAccent
+    ? { backgroundColor: accentColor, width: size * 0.22, height: size * 0.22 }
+    : { width: size * 0.22, height: size * 0.22 };
 
   return (
     <div
@@ -172,13 +198,13 @@ function TrailNode({ data, selected }: NodeProps) {
         className={`flex items-center justify-center rounded-full border transition-all duration-300 ${ring} ${glow} ${rippleClass} ${
           isFocused && !rippleState ? "animate-trail-current" : ""
         } ${justAccepted && !rippleState ? "animate-accept-world" : ""}`}
-        style={{ width: size, height: size }}
+        style={{ width: size, height: size, ...accentRingStyle }}
       >
         <div
           className={`rounded-full transition-all duration-300 ${coreColor} ${
             isFocused && !isAccepted && !rippleState ? "animate-truth-pulse" : ""
           } ${isAccepted && !rippleState ? "animate-truth-pulse" : ""}`}
-          style={{ width: size * 0.22, height: size * 0.22 }}
+          style={coreStyle}
         />
       </div>
 

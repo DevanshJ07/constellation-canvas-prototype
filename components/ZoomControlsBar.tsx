@@ -18,14 +18,14 @@ export default function ZoomControlsBar({
 }: ZoomControlsBarProps) {
   return (
     <div
-      className="pointer-events-none fixed z-[35] flex justify-center"
+      className="pointer-events-none fixed z-[35] flex justify-end"
       style={{
         left: "176px",
         right: `${panelInset}px`,
-        bottom: "24px",
+        bottom: "88px",
       }}
     >
-      <div className="pointer-events-auto flex flex-col overflow-hidden rounded-lg border border-slate-800/80 bg-slate-950/92 shadow-lg backdrop-blur-md">
+      <div className="pointer-events-auto mr-4 flex flex-col overflow-hidden rounded-lg border border-slate-800/80 bg-slate-950/92 shadow-lg backdrop-blur-md">
         <button
           type="button"
           onClick={onZoomIn}

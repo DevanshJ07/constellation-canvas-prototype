@@ -10,6 +10,7 @@ import {
 } from "@/lib/regions";
 import { WORLD_RELATIONSHIPS } from "@/lib/worldLogic";
 import type { CanvasWorldModel } from "@/lib/worldBrain/mapArchitectureToCanvas";
+import { normalizeCanvasDisplayTitle } from "@/lib/normalizeDisplayTitle";
 
 const DISCOVERY_OFFSET = { x: 40, y: 88 };
 const DISCOVERY_ROW_HEIGHT = 64;
@@ -119,6 +120,7 @@ export function buildConstellationLayout(
 }
 
 const THEME_KEYS = Object.keys(REGION_THEMES) as ConstellationRegionId[];
+const OVERVIEW_POSITION_SCALE = 0.82;
 
 /** Spatial overview layout for architecture-generated constellations. */
 export function buildArchitectureOverviewLayout(
@@ -133,11 +135,16 @@ export function buildArchitectureOverviewLayout(
     return {
       id: `region-${constellation.id}`,
       type: "constellationRegion",
-      position: slot.position,
+      position: {
+        x: slot.position.x * OVERVIEW_POSITION_SCALE,
+        y: slot.position.y * OVERVIEW_POSITION_SCALE,
+      },
       data: {
         regionId: constellation.id,
         themeKey,
-        label: constellation.displayTitle || constellation.title,
+        label: normalizeCanvasDisplayTitle(
+          constellation.displayTitle || constellation.title,
+        ),
         icon: slot.icon,
         width: slot.width,
         height: slot.height,

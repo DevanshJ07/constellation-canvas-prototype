@@ -136,7 +136,12 @@ import {
   labelPriority,
   layoutChildNodesAroundParent,
   resolveLabelOffsets,
+  fitLayoutToBounds,
+  DISCOVERY_LAYOUT_BOUNDS,
+  applyPositionMapToNodes,
 } from "@/lib/graphLayout";
+import { getConstellationTheme, themeChildEdgeStroke } from "@/lib/constellationTheme";
+import { normalizeCanvasDisplayTitle } from "@/lib/normalizeDisplayTitle";
 import type {
   AiDiscovery,
   DiscoveryAction,
@@ -312,6 +317,10 @@ function buildAvailableNodesForNodeReasoner(
   }
 
   return nodes;
+}
+
+function canvasNodeLabel(title: string): string {
+  return normalizeCanvasDisplayTitle(title);
 }
 
 export default function ConstellationCanvas({
@@ -820,6 +829,31 @@ export default function ConstellationCanvas({
     const focusedId = trail[trail.length - 1];
     const pastCount = trail.length - 1;
 
+    const constellationTheme = architectureCanvasModel
+      ? getConstellationTheme(navState.regionId, architectureCanvasModel)
+      : null;
+    const accentColor = constellationTheme?.dot;
+    const themedTrailEdge = {
+      ...TRAIL_EDGE_STYLE,
+      stroke: constellationTheme?.line ?? TRAIL_EDGE_STYLE.stroke,
+    };
+    const themedFutureEdge = {
+      ...FUTURE_EDGE_STYLE,
+      stroke: constellationTheme?.edge ?? FUTURE_EDGE_STYLE.stroke,
+    };
+    const themedAiEdge = {
+      stroke: constellationTheme?.dot ?? "rgba(139, 92, 246, 0.65)",
+      strokeWidth: 1.5,
+      strokeDasharray: "5 3",
+    };
+    const themedNrEdge = {
+      stroke: constellationTheme
+        ? themeChildEdgeStroke(constellationTheme)
+        : "rgba(56, 189, 248, 0.55)",
+      strokeWidth: 1.5,
+      strokeDasharray: "4 4",
+    };
+
     const isConstellationRootView =
       trail.length === 1 &&
       Boolean(
@@ -879,13 +913,14 @@ export default function ConstellationCanvas({
         type: "trailNode",
         position: { x, y },
         data: {
-          title: meta?.title || "Untitled Branch",
+          title: canvasNodeLabel(meta?.title || "Untitled Branch"),
           category: meta?.category,
           role: isFocused ? "focused" : "path",
           decision: decisions[id] ?? "pending",
           justAccepted: id === justAcceptedId,
           hasCreatorDirection: Boolean(creatorDirections[id]),
           journeyPhase: isFocused ? "current" : "past",
+          accentColor,
         } satisfies TrailNodeData,
         draggable: false,
         selectable: true,
@@ -898,7 +933,7 @@ export default function ConstellationCanvas({
           source: trail[i - 1],
           target: id,
           animated: isFocused,
-          style: isFocused ? TRAIL_EDGE_STYLE : PAST_EDGE_STYLE,
+          style: isFocused ? themedTrailEdge : PAST_EDGE_STYLE,
         });
       }
     });
@@ -958,9 +993,11 @@ export default function ConstellationCanvas({
         type: "trailNode",
         position,
         data: {
-          title: aiBranch
-            ? (nodeOverrides[aiBranch.id]?.title ?? (aiBranch.title || "Untitled Branch"))
-            : (nodeOverrides[id]?.title ?? meta?.title ?? "Untitled Branch"),
+          title: canvasNodeLabel(
+            aiBranch
+              ? (nodeOverrides[aiBranch.id]?.title ?? (aiBranch.title || "Untitled Branch"))
+              : (nodeOverrides[id]?.title ?? meta?.title ?? "Untitled Branch"),
+          ),
           category: aiBranch
             ? `✦ ${aiBranch.sourceAgent ?? "Agent-shaped"}`
             : (meta?.category ?? (kind === "consequence" ? "Consequence" : undefined)),
@@ -972,6 +1009,7 @@ export default function ConstellationCanvas({
           aiGenerated: ai,
           weakened: weakenedIds.has(id),
           nodeModified: Boolean(nodeOverrides[id]),
+          accentColor,
         } satisfies TrailNodeData,
         draggable: false,
         selectable: true,
@@ -984,10 +1022,10 @@ export default function ConstellationCanvas({
         target: id,
         animated: kind === "consequence" || ai,
         style: ai
-          ? { stroke: "rgba(139, 92, 246, 0.65)", strokeWidth: 1.5, strokeDasharray: "5 3" }
+          ? themedAiEdge
           : kind === "consequence"
             ? CONSEQUENCE_EDGE_STYLE
-            : FUTURE_EDGE_STYLE,
+            : themedFutureEdge,
       });
     });
 
@@ -1010,11 +1048,12 @@ export default function ConstellationCanvas({
         type: "trailNode",
         position,
         data: {
-          title:
+          title: canvasNodeLabel(
             nodeOverrides[branch.id]?.title ??
             meta?.displayTitle ??
             branch.title ??
             "Untitled Branch",
+          ),
           category: `✦ ${branch.sourceAgent ?? "Node Reasoner"}`,
           role: "direction",
           decision: decisions[branch.id] ?? "pending",
@@ -1024,6 +1063,7 @@ export default function ConstellationCanvas({
           aiGenerated: true,
           weakened: weakenedIds.has(branch.id),
           nodeModified: Boolean(nodeOverrides[branch.id]),
+          accentColor,
         } satisfies TrailNodeData,
         draggable: false,
         selectable: true,
@@ -1035,16 +1075,26 @@ export default function ConstellationCanvas({
         source: focusedId,
         target: branch.id,
         animated: true,
-        style: {
-          stroke: "rgba(56, 189, 248, 0.55)",
-          strokeWidth: 1.5,
-          strokeDasharray: "4 4",
-        },
+        style: themedNrEdge,
       });
     });
 
-    return { nodes, edges };
-  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds, aiBranches, weakenedIds, nodeOverrides, dynamicConstellations, architectureCanvasModel, nodeReasonerBranchesByParentId, nodeReasonerChildPositions, nodeReasonerPanelMeta]);
+    const layoutBounds = {
+      ...DISCOVERY_LAYOUT_BOUNDS,
+      maxX: selectedItem ? DISCOVERY_LAYOUT_BOUNDS.maxX - 40 : DISCOVERY_LAYOUT_BOUNDS.maxX,
+    };
+    const positionMap: Record<string, { x: number; y: number }> = {};
+    for (const n of nodes) {
+      positionMap[n.id] = n.position;
+    }
+    const fitted = fitLayoutToBounds(positionMap, layoutBounds, {
+      padding: 32,
+      minScale: 0.42,
+      maxScale: 1,
+    });
+
+    return { nodes: applyPositionMapToNodes(nodes, fitted), edges };
+  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds, aiBranches, weakenedIds, nodeOverrides, dynamicConstellations, architectureCanvasModel, nodeReasonerBranchesByParentId, nodeReasonerChildPositions, nodeReasonerPanelMeta, selectedItem]);
 
   // ── Canon layout: living evolution tree ─────────────────────────────────────
   const worldState = useMemo(
@@ -1156,7 +1206,9 @@ export default function ConstellationCanvas({
           data: {
             ...node.data,
             icon: regionDef?.icon ?? (node.data as { icon?: string }).icon ?? "✦",
-            label: archConst?.displayTitle ?? (node.data as { label?: string }).label,
+            label: archConst?.displayTitle
+              ? normalizeCanvasDisplayTitle(archConst.displayTitle)
+              : (node.data as { label?: string }).label,
             vitalityDots,
           },
         };
@@ -1333,7 +1385,9 @@ export default function ConstellationCanvas({
   /** Enter exploration mode for an architecture constellation (pre-seeded starting nodes). */
   const handleArchitectureConstellationEnter = useCallback(
     (constellation: CanvasConstellation) => {
-      const displayTitle = constellation.displayTitle || constellation.title;
+      const displayTitle = canvasNodeLabel(
+        constellation.displayTitle || constellation.title,
+      );
       setConstellationReasonerErrors((prev) => {
         const next = { ...prev };
         delete next[constellation.id];
@@ -2277,10 +2331,7 @@ export default function ConstellationCanvas({
       )}
       <WorldPulse shift={latestShift} nonce={pulseNonce} />
       {!(showOverviewOverlay) && (
-        <WorldWhisper
-          onSubmit={handleAddTruth}
-          emphasized={navState.mode === "overview"}
-        />
+        <WorldWhisper onSubmit={handleAddTruth} panelInset={panelInset} />
       )}
       {navState.mode === "discovery" && (
         <div
