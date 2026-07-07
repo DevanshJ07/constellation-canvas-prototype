@@ -98,6 +98,34 @@ import {
   reasonedBranchToAiDiscovery,
   type ReasonedNodePanelMeta,
 } from "@/lib/worldBrain/mapReasonedNodesToBranches";
+import {
+  canvasNodeToAvailableNode,
+  reasonedStartingNodeToAvailableNode,
+  type NodeReasonerAvailableNode,
+} from "@/lib/worldBrain/buildNodeReasonerInput";
+import {
+  mapNodeReasonerOutputToCanvasNodes,
+  nodeReasonerBranchToAiDiscovery,
+  nodeReasonerCanvasNodeToAiBranch,
+  registerNodeReasonerNodeMeta,
+  type NodeReasonerNodePanelMeta,
+} from "@/lib/worldBrain/mapNodeReasonerToCanvas";
+import {
+  buildDecisionNodeSourceFromCanvas,
+  buildDecisionWorldContextFromCanvas,
+  resolveDecisionConstellationFromCanvas,
+} from "@/lib/worldBrain/buildDecisionContextFromCanvas";
+import {
+  buildUserDecisionEventFromNodeAction,
+  createCanonStateSnapshotFromDecisions,
+} from "@/lib/worldBrain/buildUserDecisionEvent";
+import {
+  appendDecisionEvent,
+  createEmptyDecisionEventLog,
+  summarizeDecisionEventLog,
+} from "@/lib/worldBrain/decisionEventLog";
+import type { DecisionEventLog } from "@/lib/worldBrain/userDecisionTypes";
+import type { NodeReasonerOutput } from "@/lib/worldBrain/nodeReasonerTypes";
 import type { ConstellationReasonerOutput } from "@/lib/worldBrain/constellationReasonerTypes";
 import { getAgentReasoning } from "@/lib/agentReasoning";
 import { resolveNodeMeta, resolvePanelItem } from "@/lib/worldNodes";
@@ -106,6 +134,7 @@ import {
   computeOrbitalPositions,
   CONSTELLATION_ORBIT_CENTER,
   labelPriority,
+  layoutChildNodesAroundParent,
   resolveLabelOffsets,
 } from "@/lib/graphLayout";
 import type {
@@ -231,6 +260,60 @@ function getWorldDescendantIds(id: string): string[] {
   return result;
 }
 
+function buildAvailableNodesForNodeReasoner(
+  constellationId: string,
+  architectureCanvasModel: CanvasWorldModel,
+  reasonedConstellations: Record<string, ConstellationReasonerOutput>,
+  nodeReasonerBranchesByParentId: Record<string, AiGeneratedBranch[]>,
+  nodeReasonerPanelMeta: Record<string, NodeReasonerNodePanelMeta>,
+  nodeConstellationMap: Record<string, string>,
+): NodeReasonerAvailableNode[] {
+  const seen = new Set<string>();
+  const nodes: NodeReasonerAvailableNode[] = [];
+
+  const pushUnique = (node: NodeReasonerAvailableNode) => {
+    const id = "id" in node ? node.id : "";
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    nodes.push(node);
+  };
+
+  const reasoned = reasonedConstellations[constellationId];
+  if (reasoned?.startingNodes?.length) {
+    for (const n of reasoned.startingNodes) {
+      pushUnique(reasonedStartingNodeToAvailableNode(n, constellationId));
+    }
+  } else {
+    for (const n of architectureCanvasModel.nodes) {
+      if (n.constellationId === constellationId) {
+        pushUnique(canvasNodeToAvailableNode(n));
+      }
+    }
+  }
+
+  for (const branches of Object.values(nodeReasonerBranchesByParentId)) {
+    for (const branch of branches) {
+      if (nodeConstellationMap[branch.id] !== constellationId) continue;
+      const meta = nodeReasonerPanelMeta[branch.id];
+      if (!meta) continue;
+      pushUnique({
+        id: branch.id,
+        title: meta.fullTitle,
+        displayTitle: meta.displayTitle,
+        description: branch.description,
+        nodeType: branch.domain,
+        constellationId,
+        creativePurpose: meta.whyThisFollows,
+        discoveryQuestion: meta.discoveryQuestion,
+        expansionPotential: meta.expansionPotential,
+        tensionLevel: "medium",
+      });
+    }
+  }
+
+  return nodes;
+}
+
 export default function ConstellationCanvas({
   worldSeed,
   worldPurpose = null,
@@ -301,8 +384,27 @@ export default function ConstellationCanvas({
   const [constellationReasonerErrors, setConstellationReasonerErrors] = useState<
     Record<string, string>
   >({});
+  const [isReasoningNode, setIsReasoningNode] = useState(false);
+  const [reasoningNodeId, setReasoningNodeId] = useState<string | null>(null);
+  const [nodeReasonerError, setNodeReasonerError] = useState<string | null>(null);
+  const [nodeReasonerOutputsByParentId, setNodeReasonerOutputsByParentId] = useState<
+    Record<string, NodeReasonerOutput>
+  >({});
+  const [nodeReasonerBranchesByParentId, setNodeReasonerBranchesByParentId] = useState<
+    Record<string, AiGeneratedBranch[]>
+  >({});
+  const [nodeReasonerPanelMeta, setNodeReasonerPanelMeta] = useState<
+    Record<string, NodeReasonerNodePanelMeta>
+  >({});
+  const [nodeReasonerChildPositions, setNodeReasonerChildPositions] = useState<
+    Record<string, { x: number; y: number }>
+  >({});
+  const [decisionEventLog, setDecisionEventLog] = useState<DecisionEventLog>(
+    () => createEmptyDecisionEventLog(),
+  );
   const reasonedConstellationsRef = useRef(reasonedConstellations);
   const reasonerRequestGenRef = useRef<Record<string, number>>({});
+  const nodeReasonerRequestGenRef = useRef<Record<string, number>>({});
   const navStateRef = useRef(navState);
 
   useEffect(() => {
@@ -450,6 +552,78 @@ export default function ConstellationCanvas({
     [architectureCanvasModel, worldSeed, worldPurpose, applyReasonedOutput],
   );
 
+  const applyNodeReasonerOutput = useCallback(
+    (parentId: string, output: NodeReasonerOutput, constellationId: string) => {
+      if (!architectureCanvasModel) return;
+
+      const parentMeta = reasonedNodeDetails[parentId];
+      const archNode = architectureCanvasModel.nodes.find((n) => n.id === parentId);
+      const nrParentMeta = nodeReasonerPanelMeta[parentId];
+      const parentNode = {
+        id: parentId,
+        title:
+          parentMeta?.fullTitle ??
+          nrParentMeta?.fullTitle ??
+          archNode?.title ??
+          parentId,
+        displayTitle:
+          parentMeta?.displayTitle ??
+          nrParentMeta?.displayTitle ??
+          archNode?.title ??
+          parentId,
+      };
+
+      const parentDepth =
+        nrParentMeta?.depthLevel ??
+        (reasonedConstellations[constellationId]?.startingNodes.some((n) => n.id === parentId)
+          ? 1
+          : 1);
+      const depthLevel = parentDepth + 1;
+
+      const existingNodeIds = [
+        ...architectureCanvasModel.nodes.map((n) => n.id),
+        ...Object.values(reasonedConstellations).flatMap((o) =>
+          o.startingNodes.map((n) => n.id),
+        ),
+        ...Object.values(nodeReasonerBranchesByParentId).flatMap((branches) =>
+          branches.map((b) => b.id),
+        ),
+      ];
+
+      const mapped = mapNodeReasonerOutputToCanvasNodes({
+        output,
+        parentNode,
+        selectedConstellationId: constellationId,
+        depthLevel,
+        existingNodeIds,
+      });
+
+      const layout = layoutChildNodesAroundParent({
+        parentPosition: { x: 0, y: 0 },
+        parentNodeId: parentId,
+        childNodes: mapped.nodes.map((n) => ({ id: n.id })),
+        depthLevel,
+      });
+
+      const branches = mapped.nodes.map((n) =>
+        nodeReasonerCanvasNodeToAiBranch(n, mapped.panelMeta[n.id], parentId),
+      );
+
+      registerNodeReasonerNodeMeta(mapped.panelMeta, registerReasonedNodeMeta);
+      setNodeReasonerPanelMeta((prev) => ({ ...prev, ...mapped.panelMeta }));
+      setNodeReasonerChildPositions((prev) => ({ ...prev, ...layout.positions }));
+      setNodeReasonerBranchesByParentId((prev) => ({ ...prev, [parentId]: branches }));
+      setNodeConstellationMap((prev) => ({ ...prev, ...mapped.nodeConstellationMap }));
+    },
+    [
+      architectureCanvasModel,
+      reasonedNodeDetails,
+      nodeReasonerPanelMeta,
+      reasonedConstellations,
+      nodeReasonerBranchesByParentId,
+    ],
+  );
+
   const handleAddTruth = useCallback((truth: string) => {
     setCreatorTruths((prev) => [...prev, truth]);
     setLatestShift({ truth, influence: getInfluence(truth) });
@@ -495,6 +669,118 @@ export default function ConstellationCanvas({
     if (selectedItem.kind === "ai-discovery") return selectedItem.discovery.id;
     return selectedItem.consequence.id;
   }, [selectedItem]);
+
+  const handleExploreDeeper = useCallback(async () => {
+    if (!architectureCanvasModel || !selectedNodeId) return;
+
+    const constellationId =
+      navState.mode === "discovery" ? navState.regionId : null;
+    if (!constellationId) return;
+
+    if (
+      architectureCanvasModel.constellations.some((c) => c.id === selectedNodeId)
+    ) {
+      return;
+    }
+
+    const parentId = selectedNodeId;
+    const cached = nodeReasonerOutputsByParentId[parentId];
+    if (cached) {
+      setNodeReasonerError(null);
+      return;
+    }
+
+    const nextGen = (nodeReasonerRequestGenRef.current[parentId] ?? 0) + 1;
+    nodeReasonerRequestGenRef.current[parentId] = nextGen;
+
+    setIsReasoningNode(true);
+    setReasoningNodeId(parentId);
+    setNodeReasonerError(null);
+
+    try {
+      const reasoned = reasonedConstellations[constellationId];
+      const availableNodes = buildAvailableNodesForNodeReasoner(
+        constellationId,
+        architectureCanvasModel,
+        reasonedConstellations,
+        nodeReasonerBranchesByParentId,
+        nodeReasonerPanelMeta,
+        nodeConstellationMap,
+      );
+
+      const res = await fetch("/api/world/node-reasoner", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          canvasModel: architectureCanvasModel,
+          selectedConstellationId: constellationId,
+          selectedNodeId: parentId,
+          availableNodes,
+          worldPrompt: worldSeed,
+          purpose: worldPurpose ?? undefined,
+          architectureSummary: architectureCanvasModel.worldSummary,
+          localSummary: reasoned?.localSummary,
+          explorationAxes: reasoned?.explorationAxes,
+        }),
+      });
+
+      const data = (await res.json()) as {
+        success?: boolean;
+        output?: NodeReasonerOutput;
+        error?: string;
+      };
+
+      if (nodeReasonerRequestGenRef.current[parentId] !== nextGen) return;
+
+      if (!data.success || !data.output) {
+        setNodeReasonerError("Could not deepen this node yet.");
+        return;
+      }
+
+      setNodeReasonerOutputsByParentId((prev) => ({
+        ...prev,
+        [parentId]: data.output!,
+      }));
+      applyNodeReasonerOutput(parentId, data.output, constellationId);
+    } catch {
+      if (nodeReasonerRequestGenRef.current[parentId] === nextGen) {
+        setNodeReasonerError("Could not deepen this node yet.");
+      }
+    } finally {
+      if (nodeReasonerRequestGenRef.current[parentId] === nextGen) {
+        setIsReasoningNode(false);
+        setReasoningNodeId((current) => (current === parentId ? null : current));
+      }
+    }
+  }, [
+    architectureCanvasModel,
+    selectedNodeId,
+    navState,
+    nodeReasonerOutputsByParentId,
+    reasonedConstellations,
+    nodeReasonerBranchesByParentId,
+    nodeReasonerPanelMeta,
+    nodeConstellationMap,
+    worldSeed,
+    worldPurpose,
+    applyNodeReasonerOutput,
+  ]);
+
+  const canExploreDeeperNode = useMemo(() => {
+    if (!architectureCanvasModel || !selectedNodeId) return false;
+    if (selectedItem?.kind === "consequence") return false;
+    if (navState.mode !== "discovery") return false;
+    if (
+      architectureCanvasModel.constellations.some((c) => c.id === selectedNodeId)
+    ) {
+      return false;
+    }
+    return true;
+  }, [architectureCanvasModel, selectedNodeId, selectedItem, navState.mode]);
+
+  const hasNodeReasonerCache = Boolean(
+    selectedNodeId && nodeReasonerOutputsByParentId[selectedNodeId],
+  );
 
   const baseLayout = useMemo(
     () => buildConstellationLayout(worldSeed, MOCK_DISCOVERIES),
@@ -544,6 +830,7 @@ export default function ConstellationCanvas({
     const orbitCenter = CONSTELLATION_ORBIT_CENTER;
 
     const allFlatBranches = Object.values(aiBranches).flat();
+    const allNrBranches = Object.values(nodeReasonerBranchesByParentId).flat();
 
     // PAST + CURRENT: walked path
     trail.forEach((id, i) => {
@@ -552,6 +839,11 @@ export default function ConstellationCanvas({
       const archNode = architectureCanvasModel?.nodes.find((n) => n.id === id);
       const dynConst = staticMeta || archConst || archNode ? null : dynamicConstellations.find((c) => c.id === id);
       const aiBranch = (staticMeta || dynConst || archConst || archNode) ? null : allFlatBranches.find((b) => b.id === id);
+      const nrBranch =
+        staticMeta || dynConst || archConst || archNode || aiBranch
+          ? null
+          : allNrBranches.find((b) => b.id === id);
+      const nrMeta = nodeReasonerPanelMeta[id];
       const meta = staticMeta
         ?? (archNode
           ? {
@@ -566,7 +858,13 @@ export default function ConstellationCanvas({
             }
           : null)
         ?? (dynConst ? { title: dynConst.title, category: dynConst.agentName } : null)
-        ?? (aiBranch ? { title: aiBranch.title || "Untitled Branch", category: aiBranch.domain } : null);
+        ?? (aiBranch ? { title: aiBranch.title || "Untitled Branch", category: aiBranch.domain } : null)
+        ?? (nrBranch || nrMeta
+          ? {
+              title: nrMeta?.displayTitle ?? nrBranch?.title ?? "Untitled Branch",
+              category: nrBranch?.domain ?? "Continuation",
+            }
+          : null);
       const isFocused = i === trail.length - 1;
       const x = isFocused
         ? isConstellationRootView
@@ -693,8 +991,60 @@ export default function ConstellationCanvas({
       });
     });
 
+    const nrFutures = (nodeReasonerBranchesByParentId[focusedId] ?? []).filter(
+      (b) =>
+        !hiddenIds.has(b.id) &&
+        decisions[b.id] !== "rejected" &&
+        !trail.includes(b.id),
+    );
+
+    nrFutures.forEach((branch) => {
+      const position = nodeReasonerChildPositions[branch.id] ?? {
+        x: FUTURE_X,
+        y: 0,
+      };
+      const meta = nodeReasonerPanelMeta[branch.id];
+
+      nodes.push({
+        id: branch.id,
+        type: "trailNode",
+        position,
+        data: {
+          title:
+            nodeOverrides[branch.id]?.title ??
+            meta?.displayTitle ??
+            branch.title ??
+            "Untitled Branch",
+          category: `✦ ${branch.sourceAgent ?? "Node Reasoner"}`,
+          role: "direction",
+          decision: decisions[branch.id] ?? "pending",
+          justEmerged: justEmergedIds.has(branch.id),
+          hasCreatorDirection: Boolean(creatorDirections[branch.id]),
+          journeyPhase: "future",
+          aiGenerated: true,
+          weakened: weakenedIds.has(branch.id),
+          nodeModified: Boolean(nodeOverrides[branch.id]),
+        } satisfies TrailNodeData,
+        draggable: false,
+        selectable: true,
+        zIndex: 5,
+      });
+
+      edges.push({
+        id: `nr-future-${focusedId}-${branch.id}`,
+        source: focusedId,
+        target: branch.id,
+        animated: true,
+        style: {
+          stroke: "rgba(56, 189, 248, 0.55)",
+          strokeWidth: 1.5,
+          strokeDasharray: "4 4",
+        },
+      });
+    });
+
     return { nodes, edges };
-  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds, aiBranches, weakenedIds, nodeOverrides, dynamicConstellations, architectureCanvasModel]);
+  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds, aiBranches, weakenedIds, nodeOverrides, dynamicConstellations, architectureCanvasModel, nodeReasonerBranchesByParentId, nodeReasonerChildPositions, nodeReasonerPanelMeta]);
 
   // ── Canon layout: living evolution tree ─────────────────────────────────────
   const worldState = useMemo(
@@ -907,8 +1257,18 @@ export default function ConstellationCanvas({
         kind: "route" as const,
       }));
 
-    return [...routeDirs, ...consDirs, ...aiDirs];
-  }, [selectedItem, hiddenIds, decisions, aiBranches]);
+    const nrDirs = (nodeReasonerBranchesByParentId[id] ?? [])
+      .filter((b) => !hiddenIds.has(b.id) && decisions[b.id] !== "rejected")
+      .map((b) => ({
+        id: b.id,
+        title: b.title || "Untitled Branch",
+        category: b.domain,
+        decision: decisions[b.id] ?? "pending",
+        kind: "route" as const,
+      }));
+
+    return [...routeDirs, ...consDirs, ...aiDirs, ...nrDirs];
+  }, [selectedItem, hiddenIds, decisions, aiBranches, nodeReasonerBranchesByParentId]);
 
   // ── Trail navigation ────────────────────────────────────────────────────────
   const navigateTrail = useCallback(
@@ -920,6 +1280,21 @@ export default function ConstellationCanvas({
           idx >= 0 ? prev.trail.slice(0, idx + 1) : [...prev.trail, targetId];
         return { ...prev, trail };
       });
+
+      // Check if this is a Node Reasoner child branch
+      const nrBranch = Object.values(nodeReasonerBranchesByParentId)
+        .flat()
+        .find((b) => b.id === targetId);
+      if (nrBranch) {
+        setSelectedItem({
+          kind: "ai-discovery",
+          discovery: nodeReasonerBranchToAiDiscovery(
+            nrBranch,
+            nodeReasonerPanelMeta[nrBranch.id],
+          ),
+        });
+        return;
+      }
 
       // Check if this is an AI-generated branch
       const allAiBranches = Object.values(aiBranches).flat();
@@ -952,7 +1327,7 @@ export default function ConstellationCanvas({
       const item = resolvePanelItem(targetId);
       if (item) setSelectedItem(item);
     },
-    [aiBranches, architectureCanvasModel, reasonedNodeDetails],
+    [aiBranches, architectureCanvasModel, reasonedNodeDetails, nodeReasonerBranchesByParentId, nodeReasonerPanelMeta],
   );
 
   /** Enter exploration mode for an architecture constellation (pre-seeded starting nodes). */
@@ -1072,6 +1447,148 @@ export default function ConstellationCanvas({
     setSelectedItem(null);
   }, []);
 
+  /** Resolve node meta for static nodes, architecture nodes, or dynamic constellation roots. */
+  const resolveNodeMetaExt = useCallback(
+    (id: string) => {
+      const staticMeta = resolveNodeMeta(id);
+      if (staticMeta) return staticMeta;
+
+      const archNode = architectureCanvasModel?.nodes.find((n) => n.id === id);
+      if (archNode) {
+        const constellation = architectureCanvasModel!.constellations.find(
+          (c) => c.id === archNode.constellationId,
+        );
+        const agentName = constellation
+          ? getAgentNameForConstellation(architectureCanvasModel!, constellation)
+          : "Reasoning Agent";
+        return {
+          title: archNode.title.trim() || "Untitled Branch",
+          category: archNode.nodeType,
+          description: archNode.description,
+          whyItMatters: archNode.whyPromising,
+        };
+      }
+
+      const reasonedMeta = reasonedNodeDetails[id];
+      if (reasonedMeta) {
+        return {
+          title: reasonedMeta.displayTitle,
+          category: "Reasoned Node",
+          description: reasonedMeta.fullTitle,
+          whyItMatters: reasonedMeta.creativePurpose,
+        };
+      }
+
+      const nodeReasonerMeta = nodeReasonerPanelMeta[id];
+      if (nodeReasonerMeta) {
+        return {
+          title: nodeReasonerMeta.displayTitle,
+          category: "Continuation",
+          description: nodeReasonerMeta.fullTitle,
+          whyItMatters: nodeReasonerMeta.whyThisFollows,
+        };
+      }
+
+      const archConst = architectureCanvasModel?.constellations.find((c) => c.id === id);
+      if (archConst) {
+        return {
+          title: archConst.displayTitle || archConst.title,
+          category: archConst.displayTitle || "Constellation",
+          description: archConst.description,
+          whyItMatters: archConst.question,
+        };
+      }
+
+      const dynConst = dynamicConstellations.find((c) => c.id === id);
+      if (dynConst) {
+        return {
+          title: dynConst.title,
+          category: dynConst.agentName,
+          description: dynConst.description,
+          whyItMatters: dynConst.purpose,
+        };
+      }
+      return null;
+    },
+    [architectureCanvasModel, dynamicConstellations, reasonedNodeDetails, nodeReasonerPanelMeta],
+  );
+
+  const getDisplayTitle = useCallback(
+    (id: string) => resolveNodeMetaExt(id)?.title ?? "Untitled Branch",
+    [resolveNodeMetaExt],
+  );
+
+  const appendUserDecisionEventForAction = useCallback(
+    (action: Exclude<DiscoveryAction, "unaccept">, nodeId: string) => {
+      if (!selectedItem) return;
+
+      try {
+        const contextParams = {
+          nodeId,
+          selectedItem,
+          architectureCanvasModel,
+          navState,
+          nodeConstellationMap,
+          reasonedNodeDetails,
+          nodeReasonerPanelMeta,
+          nodeOverrides,
+          resolveDisplayTitle: getDisplayTitle,
+          worldSeed,
+          worldPurpose,
+        };
+
+        const canonStateBefore = createCanonStateSnapshotFromDecisions(
+          decisions,
+          acceptedIds,
+        );
+        const node = buildDecisionNodeSourceFromCanvas(contextParams);
+        const constellation = resolveDecisionConstellationFromCanvas(contextParams);
+        const worldContext = buildDecisionWorldContextFromCanvas(contextParams);
+
+        const event = buildUserDecisionEventFromNodeAction({
+          action,
+          node,
+          constellation,
+          canvasModel: architectureCanvasModel ?? undefined,
+          worldContext,
+          canonStateBefore,
+          source: "user_click",
+          snapshotOptions: {
+            constellationId: node.constellationId,
+            parentNodeId: node.parentNodeId,
+            depthLevel: node.depthLevel,
+            sourceLayer: node.sourceLayer,
+            metadata: node.metadata,
+          },
+        });
+
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[decision-event]", event);
+        }
+
+        setDecisionEventLog((prev) => appendDecisionEvent(prev, event));
+      } catch (err) {
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[decision-event] logging failed", err);
+        }
+      }
+    },
+    [
+      selectedItem,
+      architectureCanvasModel,
+      navState,
+      nodeConstellationMap,
+      reasonedNodeDetails,
+      nodeReasonerPanelMeta,
+      nodeOverrides,
+      getDisplayTitle,
+      worldSeed,
+      worldPurpose,
+      decisions,
+      acceptedIds,
+    ],
+  );
+
   // ── Action handler ─────────────────────────────────────────────────────────
   const handleAction = useCallback(
     (action: DiscoveryAction) => {
@@ -1107,6 +1624,11 @@ export default function ConstellationCanvas({
       > = { accept: "accepted", save: "saved", reject: "rejected" };
       const decision =
         decisionMap[action as Exclude<DiscoveryAction, "unaccept">];
+
+      appendUserDecisionEventForAction(
+        action as Exclude<DiscoveryAction, "unaccept">,
+        id,
+      );
 
       setDecisions((prev) => ({ ...prev, [id]: decision }));
 
@@ -1210,7 +1732,12 @@ export default function ConstellationCanvas({
         }
       }
     },
-    [selectedItem, acceptedIds, navState, triggeredEvolutionIds],
+    [selectedItem, acceptedIds, navState, triggeredEvolutionIds, appendUserDecisionEventForAction, getDisplayTitle, weakenedIds],
+  );
+
+  const decisionEventDebug = useMemo(
+    () => summarizeDecisionEventLog(decisionEventLog),
+    [decisionEventLog],
   );
 
   const handleEvolutionClose = useCallback(() => {
@@ -1296,67 +1823,6 @@ export default function ConstellationCanvas({
     const item = resolvePanelItem(nodeId);
     if (item) setSelectedItem(item);
   }, []);
-
-  /** Resolve node meta for static nodes, architecture nodes, or dynamic constellation roots. */
-  const resolveNodeMetaExt = useCallback(
-    (id: string) => {
-      const staticMeta = resolveNodeMeta(id);
-      if (staticMeta) return staticMeta;
-
-      const archNode = architectureCanvasModel?.nodes.find((n) => n.id === id);
-      if (archNode) {
-        const constellation = architectureCanvasModel!.constellations.find(
-          (c) => c.id === archNode.constellationId,
-        );
-        const agentName = constellation
-          ? getAgentNameForConstellation(architectureCanvasModel!, constellation)
-          : "Reasoning Agent";
-        return {
-          title: archNode.title.trim() || "Untitled Branch",
-          category: archNode.nodeType,
-          description: archNode.description,
-          whyItMatters: archNode.whyPromising,
-        };
-      }
-
-      const reasonedMeta = reasonedNodeDetails[id];
-      if (reasonedMeta) {
-        return {
-          title: reasonedMeta.displayTitle,
-          category: "Reasoned Node",
-          description: reasonedMeta.fullTitle,
-          whyItMatters: reasonedMeta.creativePurpose,
-        };
-      }
-
-      const archConst = architectureCanvasModel?.constellations.find((c) => c.id === id);
-      if (archConst) {
-        return {
-          title: archConst.displayTitle || archConst.title,
-          category: archConst.displayTitle || "Constellation",
-          description: archConst.description,
-          whyItMatters: archConst.question,
-        };
-      }
-
-      const dynConst = dynamicConstellations.find((c) => c.id === id);
-      if (dynConst) {
-        return {
-          title: dynConst.title,
-          category: dynConst.agentName,
-          description: dynConst.description,
-          whyItMatters: dynConst.purpose,
-        };
-      }
-      return null;
-    },
-    [architectureCanvasModel, dynamicConstellations, reasonedNodeDetails],
-  );
-
-  const getDisplayTitle = useCallback(
-    (id: string) => resolveNodeMetaExt(id)?.title ?? "Untitled Branch",
-    [resolveNodeMetaExt],
-  );
 
   /** Auto-generate initial branches for a dynamic constellation root node. */
   const autoGenerateForConstellation = useCallback(
@@ -1865,6 +2331,19 @@ export default function ConstellationCanvas({
             </span>
           </div>
         )}
+      {navState.mode === "discovery" &&
+        architectureCanvasModel &&
+        isReasoningNode &&
+        reasoningNodeId && (
+          <div
+            className="pointer-events-none absolute z-20 flex justify-center"
+            style={{ left: "176px", right: selectedItem ? "320px" : "0", top: "78px" }}
+          >
+            <span className="rounded-full border border-sky-500/40 bg-sky-950/60 px-4 py-1.5 text-[11px] text-sky-200 shadow-[0_0_20px_rgba(56,189,248,0.2)]">
+              Exploring continuations…
+            </span>
+          </div>
+        )}
       {navState.mode === "canon" && (
         <>
           <CanonUniverseOverlay
@@ -1925,6 +2404,23 @@ export default function ConstellationCanvas({
           className="absolute bottom-12 z-20 max-h-[42vh] overflow-y-auto rounded-lg border border-slate-800/80 bg-slate-950/95 p-4 shadow-xl"
           style={{ left: "184px", right: panelInset > 0 ? `${panelInset + 16}px` : "16px" }}
         >
+          <div className="mb-3 rounded border border-slate-800/60 bg-slate-900/40 px-3 py-2 text-[10px] text-slate-400">
+            <p>
+              Decision events: {decisionEventDebug.totalEvents}
+              {decisionEventLog.events.length > 0 && (
+                <>
+                  {" "}
+                  · latest{" "}
+                  {decisionEventLog.events[decisionEventLog.events.length - 1]?.eventType}{" "}
+                  —{" "}
+                  {
+                    decisionEventLog.events[decisionEventLog.events.length - 1]?.target
+                      .displayTitle
+                  }
+                </>
+              )}
+            </p>
+          </div>
           <ArchitecturePreview model={architectureCanvasModel} embedded />
         </div>
       )}
@@ -2007,6 +2503,11 @@ export default function ConstellationCanvas({
           exploreLoading={exploreLoading || constellationAutoLoading}
           exploreFallback={exploreFallback}
           exploreError={exploreError}
+          showExploreDeeper={canExploreDeeperNode}
+          onExploreDeeper={() => void handleExploreDeeper()}
+          nodeReasonerLoading={isReasoningNode && reasoningNodeId === selectedNodeId}
+          nodeReasonerError={nodeReasonerError}
+          hasNodeReasonerCache={hasNodeReasonerCache}
         />
       )}
 

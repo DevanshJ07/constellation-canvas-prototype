@@ -3,6 +3,8 @@
  * Pure functions only — no API calls, no Gemini, no React.
  */
 
+import type { AiGeneratedBranch } from "@/lib/agentExplore";
+import type { AiDiscovery } from "@/types/discovery";
 import type { CanvasNode } from "@/lib/worldBrain/mapArchitectureToCanvas";
 import type {
   ContinuationDistance,
@@ -248,4 +250,49 @@ export function registerNodeReasonerNodeMeta(
     nodeType: "continuation",
   }));
   register(entries);
+}
+
+/** Maps a Node Reasoner canvas node → AiGeneratedBranch for the exploration graph. */
+export function nodeReasonerCanvasNodeToAiBranch(
+  node: NodeReasonerCanvasNode,
+  meta: NodeReasonerNodePanelMeta,
+  parentId: string,
+): AiGeneratedBranch {
+  return {
+    id: node.id,
+    title: meta.displayTitle,
+    description: node.description,
+    whyItMatters: meta.whyThisFollows || meta.discoveryQuestion,
+    domain: node.nodeType,
+    sourceAgent: "Node Reasoner",
+    rippleHint: meta.expansionPotential,
+    crossDomainEffects: [],
+    continuityRisk:
+      meta.driftRisk === "high" ? "high" : meta.driftRisk === "low" ? "low" : "medium",
+    qualityScore: Math.min(1, meta.continuityScore / 10),
+    parentId,
+    generated: true,
+  };
+}
+
+/** Maps a Node Reasoner branch → AiDiscovery for the detail panel. */
+export function nodeReasonerBranchToAiDiscovery(
+  branch: AiGeneratedBranch,
+  meta?: NodeReasonerNodePanelMeta,
+): AiDiscovery {
+  return {
+    id: branch.id,
+    title: meta?.fullTitle ?? branch.title,
+    description: branch.description,
+    category: branch.domain,
+    whyItMatters: meta?.whyThisFollows ?? branch.whyItMatters,
+    sourceAgent: branch.sourceAgent,
+    rippleHint: meta?.expansionPotential ?? branch.rippleHint,
+    generated: true,
+    whyPromising: meta?.whyThisFollows ?? branch.whyItMatters,
+    explorationQuestions: meta?.discoveryQuestion
+      ? [meta.discoveryQuestion]
+      : undefined,
+    nodeType: branch.domain,
+  };
 }
