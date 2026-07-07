@@ -102,7 +102,7 @@ export default function RipplePreviewPanel({
   }
 
   return (
-    <aside className="flex max-h-[70vh] w-full max-w-md flex-col overflow-hidden rounded-lg border border-slate-800/80 bg-slate-950/95 shadow-xl">
+    <aside className="flex max-h-[min(70vh,calc(100vh-120px))] w-full max-w-md flex-col overflow-hidden rounded-lg border border-slate-800/80 bg-slate-950/95 shadow-xl">
       <header className="flex items-start justify-between gap-3 border-b border-slate-800/70 px-4 py-3">
         <div className="min-w-0">
           <p className="text-[9px] font-semibold uppercase tracking-[0.22em] text-violet-400/80">

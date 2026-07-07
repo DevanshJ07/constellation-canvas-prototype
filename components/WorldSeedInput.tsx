@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { ConstellationCreateOutput } from "@/lib/dynamicConstellations";
+import { fallbackConstellations } from "@/lib/dynamicConstellations";
 import type { WorldArchitecture } from "@/lib/worldBrain/architectWorld";
 import {
   mapArchitectureToCanvasModel,
@@ -198,6 +199,26 @@ export default function WorldSeedInput({ onGenerate }: WorldSeedInputProps) {
             <p className="text-center text-[11px] text-amber-400/80">
               {error}
             </p>
+          )}
+
+          {process.env.NODE_ENV === "development" && (
+            <button
+              type="button"
+              onClick={() =>
+                onGenerate(
+                  seed.trim() || "Dev ripple preview test world",
+                  {
+                    ...fallbackConstellations("dev-preview-test"),
+                    fallbackReason: "dev-preview-test",
+                  },
+                  undefined,
+                  purpose,
+                )
+              }
+              className="w-full rounded-lg border border-violet-900/40 bg-violet-950/20 px-4 py-2 text-[11px] text-violet-300/80 transition hover:border-violet-700/60 hover:text-violet-200"
+            >
+              Dev: open canvas for preview test (no API)
+            </button>
           )}
         </form>
       </div>

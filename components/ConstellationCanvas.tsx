@@ -30,6 +30,7 @@ import CanonThreadsPanel from "@/components/CanonThreadsPanel";
 import WorldSynthesisModal from "@/components/WorldSynthesisModal";
 import EvolutionEventModal from "@/components/EvolutionEventModal";
 import RippleModal from "@/components/RippleModal";
+import RipplePreviewPanel from "@/components/RipplePreviewPanel";
 import DiscoveryPanel from "@/components/DiscoveryPanel";
 import WorldSidebar from "@/components/WorldSidebar";
 import { buildConstellationLayout, buildArchitectureOverviewLayout } from "@/lib/layoutNodes";
@@ -122,9 +123,19 @@ import {
 import {
   appendDecisionEvent,
   createEmptyDecisionEventLog,
+  summarizeCanonStateFromEventLog,
   summarizeDecisionEventLog,
 } from "@/lib/worldBrain/decisionEventLog";
-import type { DecisionEventLog } from "@/lib/worldBrain/userDecisionTypes";
+import {
+  buildRippleTitleLookupMaps,
+  generateRipplePreviewForDecision,
+} from "@/lib/worldBrain/generateRipplePreviewForDecision";
+import {
+  updateRippleOperationApproval,
+  type RipplePreviewModel,
+} from "@/lib/worldBrain/ripplePreviewModel";
+import { buildMemoryEconomyRipplePreviewFixture } from "@/lib/worldBrain/ripplePreviewFixture";
+import type { DecisionEventLog, UserDecisionEvent } from "@/lib/worldBrain/userDecisionTypes";
 import type { NodeReasonerOutput } from "@/lib/worldBrain/nodeReasonerTypes";
 import type { ConstellationReasonerOutput } from "@/lib/worldBrain/constellationReasonerTypes";
 import { getAgentReasoning } from "@/lib/agentReasoning";
@@ -411,6 +422,18 @@ export default function ConstellationCanvas({
   const [decisionEventLog, setDecisionEventLog] = useState<DecisionEventLog>(
     () => createEmptyDecisionEventLog(),
   );
+  const [ripplePreview, setRipplePreview] = useState<RipplePreviewModel | null>(
+    null,
+  );
+  const [ripplePreviewPanelOpen, setRipplePreviewPanelOpen] = useState(false);
+  const [isGeneratingRipplePreview, setIsGeneratingRipplePreview] = useState(false);
+  const [ripplePreviewError, setRipplePreviewError] = useState<string | null>(
+    null,
+  );
+  const [latestRippleTriggerEventId, setLatestRippleTriggerEventId] = useState<
+    string | null
+  >(null);
+  const rippleRequestGenRef = useRef(0);
   const reasonedConstellationsRef = useRef(reasonedConstellations);
   const reasonerRequestGenRef = useRef<Record<string, number>>({});
   const nodeReasonerRequestGenRef = useRef<Record<string, number>>({});
@@ -1573,8 +1596,11 @@ export default function ConstellationCanvas({
   );
 
   const appendUserDecisionEventForAction = useCallback(
-    (action: Exclude<DiscoveryAction, "unaccept">, nodeId: string) => {
-      if (!selectedItem) return;
+    (
+      action: Exclude<DiscoveryAction, "unaccept">,
+      nodeId: string,
+    ): { event: UserDecisionEvent; updatedLog: DecisionEventLog } | null => {
+      if (!selectedItem) return null;
 
       try {
         const contextParams = {
@@ -1620,11 +1646,18 @@ export default function ConstellationCanvas({
           console.debug("[decision-event]", event);
         }
 
-        setDecisionEventLog((prev) => appendDecisionEvent(prev, event));
+        let updatedLog!: DecisionEventLog;
+        setDecisionEventLog((prev) => {
+          updatedLog = appendDecisionEvent(prev, event);
+          return updatedLog;
+        });
+
+        return { event, updatedLog };
       } catch (err) {
         if (process.env.NODE_ENV === "development") {
           console.debug("[decision-event] logging failed", err);
         }
+        return null;
       }
     },
     [
@@ -1642,6 +1675,76 @@ export default function ConstellationCanvas({
       acceptedIds,
     ],
   );
+
+  const requestRipplePreview = useCallback(
+    async (event: UserDecisionEvent, updatedLog: DecisionEventLog) => {
+      if (!architectureCanvasModel) return;
+
+      const requestGen = rippleRequestGenRef.current + 1;
+      rippleRequestGenRef.current = requestGen;
+
+      setRipplePreview(null);
+      setRipplePreviewPanelOpen(false);
+      setRipplePreviewError(null);
+      setIsGeneratingRipplePreview(true);
+      setLatestRippleTriggerEventId(event.id);
+
+      const titleMaps = buildRippleTitleLookupMaps({
+        canvasModel: architectureCanvasModel,
+        reasonedNodeDetails,
+        nodeReasonerPanelMeta,
+        nodeOverrides,
+      });
+
+      const result = await generateRipplePreviewForDecision({
+        triggerEvent: event,
+        decisionLog: updatedLog,
+        canvasModel: architectureCanvasModel,
+        activeCanonState: summarizeCanonStateFromEventLog(updatedLog),
+        affectedScopeHint: "node",
+        evaluationMode: "balanced",
+        nodeTitleById: titleMaps.nodeTitleById,
+        constellationTitleById: titleMaps.constellationTitleById,
+      });
+
+      if (rippleRequestGenRef.current !== requestGen) return;
+
+      setIsGeneratingRipplePreview(false);
+
+      if (result.ok) {
+        setRipplePreview(result.preview);
+        setRipplePreviewPanelOpen(true);
+        setRipplePreviewError(null);
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[ripple-preview] ready", {
+            triggerEventId: event.id,
+            operationCount: result.preview.counts.operationCount,
+            status: result.preview.status,
+          });
+        }
+      } else {
+        setRipplePreviewError(result.error);
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[ripple-preview] failed", event.id, result.error);
+        }
+      }
+    },
+    [
+      architectureCanvasModel,
+      reasonedNodeDetails,
+      nodeReasonerPanelMeta,
+      nodeOverrides,
+    ],
+  );
+
+  const showMockRipplePreview = useCallback(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    setRipplePreviewError(null);
+    setIsGeneratingRipplePreview(false);
+    setLatestRippleTriggerEventId("dev_mock_ripple_preview");
+    setRipplePreview(buildMemoryEconomyRipplePreviewFixture());
+    setRipplePreviewPanelOpen(true);
+  }, []);
 
   // ── Action handler ─────────────────────────────────────────────────────────
   const handleAction = useCallback(
@@ -1679,12 +1782,19 @@ export default function ConstellationCanvas({
       const decision =
         decisionMap[action as Exclude<DiscoveryAction, "unaccept">];
 
-      appendUserDecisionEventForAction(
+      const decisionEventResult = appendUserDecisionEventForAction(
         action as Exclude<DiscoveryAction, "unaccept">,
         id,
       );
 
       setDecisions((prev) => ({ ...prev, [id]: decision }));
+
+      if (decisionEventResult && architectureCanvasModel) {
+        void requestRipplePreview(
+          decisionEventResult.event,
+          decisionEventResult.updatedLog,
+        );
+      }
 
       // Accepting a weakened node overrides the weakened state — the creator is
       // explicitly committing to this truth regardless of direction alignment.
@@ -1786,7 +1896,7 @@ export default function ConstellationCanvas({
         }
       }
     },
-    [selectedItem, acceptedIds, navState, triggeredEvolutionIds, appendUserDecisionEventForAction, getDisplayTitle, weakenedIds],
+    [selectedItem, acceptedIds, navState, triggeredEvolutionIds, appendUserDecisionEventForAction, requestRipplePreview, architectureCanvasModel, getDisplayTitle, weakenedIds],
   );
 
   const decisionEventDebug = useMemo(
@@ -2450,6 +2560,16 @@ export default function ConstellationCanvas({
           {archDebugOpen ? "Hide architecture debug" : "Architecture debug"}
         </button>
       )}
+      {process.env.NODE_ENV === "development" && (
+        <button
+          type="button"
+          onClick={showMockRipplePreview}
+          className="absolute bottom-4 z-20 rounded border border-violet-900/50 bg-violet-950/40 px-2.5 py-1 text-[9px] uppercase tracking-[0.14em] text-violet-400/80 transition hover:border-violet-700 hover:text-violet-300"
+          style={{ left: architectureCanvasModel ? "320px" : "184px" }}
+        >
+          Mock ripple preview
+        </button>
+      )}
       {architectureCanvasModel && archDebugOpen && (
         <div
           className="absolute bottom-12 z-20 max-h-[42vh] overflow-y-auto rounded-lg border border-slate-800/80 bg-slate-950/95 p-4 shadow-xl"
@@ -2560,6 +2680,92 @@ export default function ConstellationCanvas({
           nodeReasonerError={nodeReasonerError}
           hasNodeReasonerCache={hasNodeReasonerCache}
         />
+      )}
+
+      {(isGeneratingRipplePreview || ripplePreviewError || ripplePreview) && (
+        <div
+          className="pointer-events-none fixed inset-0 z-[70]"
+          aria-live="polite"
+        >
+          <div
+            className="pointer-events-auto absolute flex max-h-[calc(100vh-96px)] flex-col gap-2 overflow-y-auto"
+            style={{
+              top: "78px",
+              right: panelInset > 0 ? `${panelInset + 12}px` : "12px",
+              width: "min(360px, calc(100vw - 200px))",
+            }}
+          >
+            {isGeneratingRipplePreview && (
+              <div className="shrink-0 rounded-lg border border-violet-800/40 bg-slate-950/95 px-3 py-2 text-xs text-violet-200/90 shadow-lg">
+                Preparing ripple preview...
+              </div>
+            )}
+            {ripplePreviewError && !isGeneratingRipplePreview && (
+              <div className="flex shrink-0 items-start justify-between gap-2 rounded-lg border border-amber-800/40 bg-amber-950/25 px-3 py-2 text-xs text-amber-200/90 shadow-lg">
+                <span>{ripplePreviewError}</span>
+                <button
+                  type="button"
+                  onClick={() => setRipplePreviewError(null)}
+                  className="shrink-0 text-amber-400/70 transition hover:text-amber-200"
+                  aria-label="Dismiss ripple preview error"
+                >
+                  ×
+                </button>
+              </div>
+            )}
+            {ripplePreview && !ripplePreviewPanelOpen && !isGeneratingRipplePreview && (
+              <button
+                type="button"
+                onClick={() => setRipplePreviewPanelOpen(true)}
+                className="shrink-0 rounded-lg border border-violet-700/50 bg-violet-950/50 px-3 py-2 text-left text-xs text-violet-200 shadow-lg transition hover:border-violet-500/60 hover:bg-violet-950/70"
+              >
+                <span className="font-medium">Ripple preview ready</span>
+                <span className="mt-0.5 block text-[10px] text-violet-300/70">
+                  {ripplePreview.counts.operationCount} operations ·{" "}
+                  {ripplePreview.counts.warningCount} warnings — tap to review
+                </span>
+              </button>
+            )}
+            {ripplePreview && ripplePreviewPanelOpen && (
+              <RipplePreviewPanel
+                preview={ripplePreview}
+                onClose={() => setRipplePreviewPanelOpen(false)}
+                onApproveOperation={(operationId) => {
+                  setRipplePreview((prev) =>
+                    prev
+                      ? updateRippleOperationApproval(prev, operationId, "approved")
+                      : null,
+                  );
+                }}
+                onRejectOperation={(operationId) => {
+                  setRipplePreview((prev) =>
+                    prev
+                      ? updateRippleOperationApproval(prev, operationId, "rejected")
+                      : null,
+                  );
+                }}
+                onRequestClarification={(operationId) => {
+                  setRipplePreview((prev) =>
+                    prev
+                      ? updateRippleOperationApproval(
+                          prev,
+                          operationId,
+                          "needs_clarification",
+                        )
+                      : null,
+                  );
+                  if (process.env.NODE_ENV === "development") {
+                    console.debug(
+                      "[ripple-preview] clarification requested",
+                      operationId,
+                      latestRippleTriggerEventId,
+                    );
+                  }
+                }}
+              />
+            )}
+          </div>
+        </div>
       )}
 
       {/* World Shift modal — shown after adaptation */}
