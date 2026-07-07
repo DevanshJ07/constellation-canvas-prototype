@@ -36,8 +36,15 @@ import type {
   PossibleNodeContinuationType,
 } from "@/lib/worldBrain/nodeReasonerTypes";
 import { parseGeminiJsonContent } from "@/lib/worldBrain/reasonConstellation";
+import {
+  generateJsonWithLLMFallback,
+  hasGeminiApiKey,
+  hasOpenRouterApiKey,
+  resolveDefaultLLMProvider,
+  resolveGeminiModel,
+} from "@/lib/llm/llmClient";
 
-const REASONER_MODEL = "gemini-2.5-flash";
+const REASONER_MODEL = resolveGeminiModel();
 
 const VALID_DRIFT = new Set<string>(NODE_REASONER_DRIFT_RISKS);
 const VALID_DISTANCE = new Set<string>(NODE_REASONER_CONTINUATION_DISTANCES);
@@ -324,67 +331,45 @@ export function normalizeNodeReasonerOutput(
   };
 }
 
-async function reasonNodeWithGemini(
-  input: NodeReasonerInput,
-  apiKey: string,
-): Promise<NodeReasonerOutput> {
+async function reasonNodeWithLLM(input: NodeReasonerInput): Promise<NodeReasonerOutput> {
   const prompt = buildNodeReasonerPrompt(input);
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${REASONER_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.7,
-        responseMimeType: "application/json",
-      },
-    }),
+  const result = await generateJsonWithLLMFallback({
+    provider: resolveDefaultLLMProvider(),
+    model: REASONER_MODEL,
+    prompt,
+    temperature: 0.7,
+    responseMimeType: "application/json",
   });
-
-  const payload = (await res.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] } }[];
-    error?: { message?: string; code?: number };
-  };
-
-  if (!res.ok) {
-    const msg = payload.error?.message ?? res.statusText;
-    throw new Error(`Gemini HTTP ${res.status}: ${msg}`);
-  }
-
-  if (payload.error) {
-    throw new Error(`Gemini error: ${payload.error.message ?? "unknown"}`);
-  }
-
-  const content = payload.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!content) throw new Error("Empty response from Gemini");
 
   let parsed: unknown;
   try {
-    parsed = parseGeminiJsonContent(content);
+    parsed = parseGeminiJsonContent(result.text);
   } catch (e) {
-    throw new Error(`Gemini JSON parse failed: ${String(e)}`);
+    throw new Error(
+      `LLM JSON parse failed (${result.provider}/${result.model}): ${String(e)}`,
+    );
   }
 
   const normalized = normalizeNodeReasonerOutput(parsed, input);
   if (!normalized) {
-    throw new Error("Invalid NodeReasonerOutput shape from Gemini response");
+    throw new Error(
+      `Invalid NodeReasonerOutput shape from ${result.provider}/${result.model}`,
+    );
   }
 
   return normalized;
 }
 
-/** Calls Gemini to reason deeper inside one selected node. */
+/** Calls the configured LLM to reason deeper inside one selected node. */
 export async function reasonNodeWorld(
   input: NodeReasonerInput,
 ): Promise<NodeReasonerOutput> {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error("Missing GEMINI_API_KEY");
+  if (!hasGeminiApiKey() && !hasOpenRouterApiKey()) {
+    throw new Error("Missing GEMINI_API_KEY or OPENROUTER_API_KEY");
   }
 
-  return reasonNodeWithGemini(input, apiKey);
+  return reasonNodeWithLLM(input);
 }
 
 /** Alias for reasonNodeWorld. */
