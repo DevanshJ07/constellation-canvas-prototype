@@ -31,6 +31,7 @@ import WorldSynthesisModal from "@/components/WorldSynthesisModal";
 import EvolutionEventModal from "@/components/EvolutionEventModal";
 import RippleModal from "@/components/RippleModal";
 import RipplePreviewPanel from "@/components/RipplePreviewPanel";
+import WorldEvolutionPreviewPanel from "@/components/WorldEvolutionPreviewPanel";
 import DiscoveryPanel from "@/components/DiscoveryPanel";
 import WorldSidebar from "@/components/WorldSidebar";
 import { buildConstellationLayout, buildArchitectureOverviewLayout } from "@/lib/layoutNodes";
@@ -135,6 +136,21 @@ import {
   type RipplePreviewModel,
 } from "@/lib/worldBrain/ripplePreviewModel";
 import { buildMemoryEconomyRipplePreviewFixture } from "@/lib/worldBrain/ripplePreviewFixture";
+import { buildWorldEvolutionPlanFromRipplePreview } from "@/lib/worldBrain/buildWorldEvolutionFromRipple";
+import { buildWorldEvolutionApplyDryRun, createCanvasEvolutionFingerprint } from "@/lib/worldBrain/worldEvolutionApplyDryRun";
+import {
+  applyWorldEvolutionPatches,
+  computeEvolutionOverlayBatchDelta,
+  extractEvolutionOverlayFromModel,
+  findLatestUndoableEvolutionHistoryEntry,
+  markEvolutionHistoryEntryUndone,
+  type EvolutionAwareCanvasModel,
+  type EvolutionHistoryEntry,
+  type EvolutionUndoSnapshot,
+  type WorldEvolutionApplyResult,
+} from "@/lib/worldBrain/worldEvolutionApply";
+import type { WorldEvolutionConfirmApplyArgs } from "@/components/WorldEvolutionPreviewPanel";
+import { buildWorldEvolutionPreviewModel } from "@/lib/worldBrain/worldEvolutionPreviewModel";
 import type { DecisionEventLog, UserDecisionEvent } from "@/lib/worldBrain/userDecisionTypes";
 import type { NodeReasonerOutput } from "@/lib/worldBrain/nodeReasonerTypes";
 import type { ConstellationReasonerOutput } from "@/lib/worldBrain/constellationReasonerTypes";
@@ -341,8 +357,12 @@ export default function ConstellationCanvas({
   worldInterpretation = null,
   usedFallback = false,
   fallbackReason,
-  architectureCanvasModel = null,
+  architectureCanvasModel: initialArchitectureCanvasModel = null,
 }: ConstellationCanvasProps) {
+  const [evolutionAppliedCanvasModel, setEvolutionAppliedCanvasModel] =
+    useState<EvolutionAwareCanvasModel | null>(null);
+  const architectureCanvasModel =
+    evolutionAppliedCanvasModel ?? initialArchitectureCanvasModel;
   const [navState, setNavState] = useState<NavState>({ mode: "overview" });
   const [selectedItem, setSelectedItem] = useState<PanelItem | null>(null);
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
@@ -433,6 +453,22 @@ export default function ConstellationCanvas({
   const [latestRippleTriggerEventId, setLatestRippleTriggerEventId] = useState<
     string | null
   >(null);
+  const [evolutionPreviewPanelOpen, setEvolutionPreviewPanelOpen] = useState(true);
+  const [isApplyingWorldEvolution, setIsApplyingWorldEvolution] = useState(false);
+  const [worldEvolutionApplyError, setWorldEvolutionApplyError] = useState<string | null>(
+    null,
+  );
+  const [lastWorldEvolutionApplyResult, setLastWorldEvolutionApplyResult] =
+    useState<WorldEvolutionApplyResult | null>(null);
+  const [evolutionHistoryEntries, setEvolutionHistoryEntries] = useState<
+    EvolutionHistoryEntry[]
+  >([]);
+  const [worldEvolutionUndoNotice, setWorldEvolutionUndoNotice] = useState<string | null>(
+    null,
+  );
+  const [worldEvolutionUndoError, setWorldEvolutionUndoError] = useState<string | null>(
+    null,
+  );
   const rippleRequestGenRef = useRef(0);
   const reasonedConstellationsRef = useRef(reasonedConstellations);
   const reasonerRequestGenRef = useRef<Record<string, number>>({});
@@ -1742,9 +1778,309 @@ export default function ConstellationCanvas({
     setRipplePreviewError(null);
     setIsGeneratingRipplePreview(false);
     setLatestRippleTriggerEventId("dev_mock_ripple_preview");
+    setEvolutionPreviewPanelOpen(true);
     setRipplePreview(buildMemoryEconomyRipplePreviewFixture());
     setRipplePreviewPanelOpen(true);
   }, []);
+
+  const rippleTitleMaps = useMemo(
+    () =>
+      buildRippleTitleLookupMaps({
+        canvasModel: architectureCanvasModel,
+        reasonedNodeDetails,
+        nodeReasonerPanelMeta,
+        nodeOverrides,
+      }),
+    [architectureCanvasModel, reasonedNodeDetails, nodeReasonerPanelMeta, nodeOverrides],
+  );
+
+  const worldEvolutionPlan = useMemo(() => {
+    if (!ripplePreview) return null;
+    return buildWorldEvolutionPlanFromRipplePreview({
+      preview: ripplePreview,
+      canvasModel: architectureCanvasModel,
+      canonState: summarizeCanonStateFromEventLog(decisionEventLog),
+      nodeTitleById: rippleTitleMaps.nodeTitleById,
+      nodeConstellationMap,
+      decisionEventLog,
+    });
+  }, [
+    ripplePreview,
+    architectureCanvasModel,
+    decisionEventLog,
+    rippleTitleMaps.nodeTitleById,
+    nodeConstellationMap,
+  ]);
+
+  const worldEvolutionPreview = useMemo(() => {
+    if (!worldEvolutionPlan) return null;
+    return buildWorldEvolutionPreviewModel(worldEvolutionPlan, {
+      nodeTitleById: rippleTitleMaps.nodeTitleById,
+      constellationTitleById: rippleTitleMaps.constellationTitleById,
+    });
+  }, [worldEvolutionPlan, rippleTitleMaps]);
+
+  const worldEvolutionApplyDryRun = useMemo(() => {
+    if (!worldEvolutionPlan) return null;
+    const existingNodeIds = architectureCanvasModel
+      ? architectureCanvasModel.nodes.map((node) => node.id)
+      : Object.keys(nodeConstellationMap);
+    const existingConstellationIds = architectureCanvasModel
+      ? architectureCanvasModel.constellations.map((constellation) => constellation.id)
+      : [...new Set(Object.values(nodeConstellationMap))];
+
+    return buildWorldEvolutionApplyDryRun({
+      plan: worldEvolutionPlan,
+      canvasModel: architectureCanvasModel,
+      canonState: summarizeCanonStateFromEventLog(decisionEventLog),
+      nodeConstellationMap,
+      nodeTitleById: rippleTitleMaps.nodeTitleById,
+      existingNodeIds,
+      existingConstellationIds,
+    });
+  }, [
+    worldEvolutionPlan,
+    architectureCanvasModel,
+    decisionEventLog,
+    nodeConstellationMap,
+    rippleTitleMaps.nodeTitleById,
+  ]);
+
+  const syncEvolutionOverlayToUi = useCallback(
+    (
+      model: EvolutionAwareCanvasModel,
+      options: { mode?: "apply" | "restore"; undoSnapshot?: EvolutionUndoSnapshot } = {},
+    ) => {
+      const mode = options.mode ?? "apply";
+      registerCanvasWorldModel(model);
+
+      const { branches, nodeConstellationMap: archNodeMap } = buildArchitectureBranches(model);
+      const archConstellationIds = new Set(model.constellations.map((constellation) => constellation.id));
+
+      setAiBranches((prev) => {
+        const next = { ...prev };
+
+        if (mode === "restore" && options.undoSnapshot) {
+          const batchDelta = computeEvolutionOverlayBatchDelta(
+            options.undoSnapshot.canvasModelBefore,
+            options.undoSnapshot.canvasModelAfter,
+          );
+          for (const constellationId of archConstellationIds) {
+            next[constellationId] = branches[constellationId] ?? [];
+          }
+          for (const [constellationId, branchList] of Object.entries(next)) {
+            next[constellationId] = branchList.filter(
+              (branch) => !batchDelta.nodesAdded.includes(branch.id),
+            );
+          }
+          return next;
+        }
+
+        for (const [constellationId, branchList] of Object.entries(branches)) {
+          const existing = next[constellationId] ?? [];
+          const merged = [...existing];
+          for (const branch of branchList) {
+            if (!merged.some((item) => item.id === branch.id)) {
+              merged.push(branch);
+            }
+          }
+          next[constellationId] = merged;
+        }
+        return next;
+      });
+
+      setNodeConstellationMap((prev) => {
+        if (mode === "restore" && options.undoSnapshot) {
+          const batchDelta = computeEvolutionOverlayBatchDelta(
+            options.undoSnapshot.canvasModelBefore,
+            options.undoSnapshot.canvasModelAfter,
+          );
+          const next: Record<string, string> = {};
+          for (const [nodeId, constellationId] of Object.entries(prev)) {
+            if (!batchDelta.nodesAdded.includes(nodeId)) {
+              next[nodeId] = constellationId;
+            }
+          }
+          return { ...next, ...archNodeMap };
+        }
+        return { ...prev, ...archNodeMap };
+      });
+
+      const overlay =
+        mode === "restore" && options.undoSnapshot
+          ? extractEvolutionOverlayFromModel(options.undoSnapshot.canvasModelBefore)
+          : model.evolutionOverlay
+            ? extractEvolutionOverlayFromModel(model)
+            : null;
+
+      if (!overlay && mode !== "restore") return;
+
+      if (mode === "restore" && options.undoSnapshot) {
+        const batchDelta = computeEvolutionOverlayBatchDelta(
+          options.undoSnapshot.canvasModelBefore,
+          options.undoSnapshot.canvasModelAfter,
+        );
+        const targetOverlay = extractEvolutionOverlayFromModel(
+          options.undoSnapshot.canvasModelBefore,
+        );
+
+        setWeakenedIds((prev) => {
+          const next = new Set(prev);
+          for (const nodeId of batchDelta.weakenedAdded) next.delete(nodeId);
+          for (const nodeId of targetOverlay.weakenedNodeIds) next.add(nodeId);
+          return next;
+        });
+
+        setHiddenIds((prev) => {
+          const next = new Set(prev);
+          for (const nodeId of batchDelta.archivedAdded) next.delete(nodeId);
+          for (const nodeId of targetOverlay.archivedNodeIds) next.add(nodeId);
+          return next;
+        });
+        return;
+      }
+
+      if (overlay) {
+        if (overlay.weakenedNodeIds.length > 0) {
+          setWeakenedIds((prev) => new Set([...prev, ...overlay.weakenedNodeIds]));
+        }
+
+        // TODO: dedicated archived-node styling — soft-hide via hiddenIds until archive UI exists.
+        if (overlay.archivedNodeIds.length > 0) {
+          setHiddenIds((prev) => new Set([...prev, ...overlay.archivedNodeIds]));
+        }
+      }
+    },
+    [],
+  );
+
+  const canUndoLastWorldEvolutionApply = useMemo(
+    () => findLatestUndoableEvolutionHistoryEntry(evolutionHistoryEntries) !== null,
+    [evolutionHistoryEntries],
+  );
+
+  const handleUndoLastWorldEvolutionApply = useCallback(() => {
+    const entry = findLatestUndoableEvolutionHistoryEntry(evolutionHistoryEntries);
+    if (!entry?.undoSnapshot?.canvasModelBefore) {
+      setWorldEvolutionUndoNotice(null);
+      setWorldEvolutionUndoError("No evolution batch available to undo.");
+      return;
+    }
+
+    const restoredModel = structuredClone(
+      entry.undoSnapshot.canvasModelBefore,
+    ) as EvolutionAwareCanvasModel;
+
+    const equalsInitial =
+      initialArchitectureCanvasModel !== null &&
+      JSON.stringify(restoredModel) === JSON.stringify(initialArchitectureCanvasModel);
+
+    setEvolutionAppliedCanvasModel(equalsInitial ? null : restoredModel);
+    syncEvolutionOverlayToUi(restoredModel, {
+      mode: "restore",
+      undoSnapshot: entry.undoSnapshot,
+    });
+
+    const undoneAt = new Date().toISOString();
+    setEvolutionHistoryEntries((prev) =>
+      markEvolutionHistoryEntryUndone(prev, entry.id, undoneAt),
+    );
+    setLastWorldEvolutionApplyResult(null);
+    setWorldEvolutionApplyError(null);
+    setWorldEvolutionUndoError(null);
+    setWorldEvolutionUndoNotice(
+      `Undid evolution batch (${entry.appliedPatchIds.length} patch${entry.appliedPatchIds.length === 1 ? "" : "es"}).`,
+    );
+  }, [evolutionHistoryEntries, initialArchitectureCanvasModel, syncEvolutionOverlayToUi]);
+
+  const handleConfirmWorldEvolutionApply = useCallback(
+    ({ selectedPatchIds, allowNeedsReviewPatches }: WorldEvolutionConfirmApplyArgs) => {
+      if (!architectureCanvasModel) {
+        setWorldEvolutionApplyError("No architecture canvas model available.");
+        return;
+      }
+      if (!worldEvolutionApplyDryRun) {
+        setWorldEvolutionApplyError("No dry-run result available.");
+        return;
+      }
+      if (selectedPatchIds.length === 0) {
+        setWorldEvolutionApplyError("Select at least one patch to apply.");
+        return;
+      }
+      if (
+        worldEvolutionApplyDryRun.status === "failed" ||
+        worldEvolutionApplyDryRun.status === "blocked"
+      ) {
+        setWorldEvolutionApplyError(
+          `Dry-run is ${worldEvolutionApplyDryRun.status}; apply is not allowed.`,
+        );
+        return;
+      }
+
+      const currentCanvasFingerprint = createCanvasEvolutionFingerprint(architectureCanvasModel);
+      if (
+        worldEvolutionApplyDryRun.canvasFingerprint &&
+        worldEvolutionApplyDryRun.canvasFingerprint !== currentCanvasFingerprint
+      ) {
+        setWorldEvolutionApplyError(
+          "Dry run is stale. Refresh evolution preview before applying.",
+        );
+        return;
+      }
+
+      setIsApplyingWorldEvolution(true);
+      setWorldEvolutionApplyError(null);
+
+      try {
+        const result = applyWorldEvolutionPatches({
+          canvasModel: architectureCanvasModel,
+          dryRun: worldEvolutionApplyDryRun,
+          confirmed: true,
+          selectedPatchIds,
+          allowNeedsReviewPatches,
+          canonState: summarizeCanonStateFromEventLog(decisionEventLog),
+          planId: worldEvolutionPlan?.id,
+          triggerEventId: worldEvolutionPlan?.triggerEventId,
+          evolutionPolicy: worldEvolutionPlan?.policy,
+          currentCanvasFingerprint,
+        });
+
+        setLastWorldEvolutionApplyResult(result);
+
+        if (result.status === "applied") {
+          setEvolutionAppliedCanvasModel(result.canvasModel);
+          syncEvolutionOverlayToUi(result.canvasModel, { mode: "apply" });
+          setEvolutionHistoryEntries((prev) => [...prev, result.historyEntry]);
+          setWorldEvolutionApplyError(null);
+          setWorldEvolutionUndoNotice(null);
+          setWorldEvolutionUndoError(null);
+        } else {
+          const failureDetail =
+            result.failedPatches.length > 0
+              ? result.failedPatches.map((patch) => patch.stopReason).join(", ")
+              : result.summary;
+          setWorldEvolutionApplyError(
+            result.status === "partially_applied"
+              ? `Partial apply is not enabled: ${failureDetail}`
+              : failureDetail,
+          );
+        }
+      } catch (error) {
+        setWorldEvolutionApplyError(
+          error instanceof Error ? error.message : "Unexpected apply failure.",
+        );
+      } finally {
+        setIsApplyingWorldEvolution(false);
+      }
+    },
+    [
+      architectureCanvasModel,
+      worldEvolutionApplyDryRun,
+      worldEvolutionPlan,
+      decisionEventLog,
+      syncEvolutionOverlayToUi,
+    ],
+  );
 
   // ── Action handler ─────────────────────────────────────────────────────────
   const handleAction = useCallback(
@@ -2736,6 +3072,7 @@ export default function ConstellationCanvas({
                       ? updateRippleOperationApproval(prev, operationId, "approved")
                       : null,
                   );
+                  setEvolutionPreviewPanelOpen(true);
                 }}
                 onRejectOperation={(operationId) => {
                   setRipplePreview((prev) =>
@@ -2764,6 +3101,47 @@ export default function ConstellationCanvas({
                 }}
               />
             )}
+            {worldEvolutionPreview?.canShowPreview &&
+              !isGeneratingRipplePreview &&
+              !evolutionPreviewPanelOpen && (
+                <button
+                  type="button"
+                  onClick={() => setEvolutionPreviewPanelOpen(true)}
+                  className="shrink-0 rounded-lg border border-cyan-700/50 bg-cyan-950/40 px-3 py-2 text-left text-xs text-cyan-200 shadow-lg transition hover:border-cyan-500/60 hover:bg-cyan-950/60"
+                >
+                  <span className="font-medium">Evolution preview ready</span>
+                  <span className="mt-0.5 block text-[10px] text-cyan-300/70">
+                    {worldEvolutionPreview.displayStatus} ·{" "}
+                    {worldEvolutionPreview.readyActions.length} ready ·{" "}
+                    {worldEvolutionPreview.blockers.length} blockers — tap to review
+                  </span>
+                </button>
+              )}
+            {worldEvolutionPreview?.canShowPreview &&
+              evolutionPreviewPanelOpen &&
+              !isGeneratingRipplePreview && (
+                <WorldEvolutionPreviewPanel
+                  preview={worldEvolutionPreview}
+                  applyDryRun={worldEvolutionApplyDryRun}
+                  dryRunTitleLookup={{
+                    nodeTitleById: rippleTitleMaps.nodeTitleById,
+                    constellationTitleById: rippleTitleMaps.constellationTitleById,
+                  }}
+                  onClose={() => setEvolutionPreviewPanelOpen(false)}
+                  onConfirmApply={handleConfirmWorldEvolutionApply}
+                  isApplying={isApplyingWorldEvolution}
+                  applyError={worldEvolutionApplyError}
+                  applyNotice={
+                    lastWorldEvolutionApplyResult?.status === "applied"
+                      ? lastWorldEvolutionApplyResult.summary
+                      : null
+                  }
+                  onUndoLastApply={handleUndoLastWorldEvolutionApply}
+                  canUndoLastApply={canUndoLastWorldEvolutionApply}
+                  undoNotice={worldEvolutionUndoNotice}
+                  undoError={worldEvolutionUndoError}
+                />
+              )}
           </div>
         </div>
       )}
