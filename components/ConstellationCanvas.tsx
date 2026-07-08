@@ -22,6 +22,8 @@ import ConstellationRegionNode, {
 import DiscoveryNode, {
   type DiscoveryNodeData,
 } from "@/components/DiscoveryNode";
+import GhostOrbitNode from "@/components/GhostOrbitNode";
+import OrbitRingNode from "@/components/OrbitRingNode";
 import TrailNode, { type TrailNodeData } from "@/components/TrailNode";
 import GraphMinimap from "@/components/GraphMinimap";
 import ZoomControlsBar from "@/components/ZoomControlsBar";
@@ -30,6 +32,7 @@ import CanonThreadsPanel from "@/components/CanonThreadsPanel";
 import WorldSynthesisModal from "@/components/WorldSynthesisModal";
 import EvolutionEventModal from "@/components/EvolutionEventModal";
 import RippleModal from "@/components/RippleModal";
+import WorldChangeCard from "@/components/WorldChangeCard";
 import RipplePreviewPanel from "@/components/RipplePreviewPanel";
 import WorldEvolutionPreviewPanel from "@/components/WorldEvolutionPreviewPanel";
 import DiscoveryPanel from "@/components/DiscoveryPanel";
@@ -157,8 +160,6 @@ import type { ConstellationReasonerOutput } from "@/lib/worldBrain/constellation
 import { getAgentReasoning } from "@/lib/agentReasoning";
 import { resolveNodeMeta, resolvePanelItem } from "@/lib/worldNodes";
 import {
-  computeFutureYPositions,
-  computeOrbitalPositions,
   CONSTELLATION_ORBIT_CENTER,
   labelPriority,
   layoutChildNodesAroundParent,
@@ -167,8 +168,46 @@ import {
   DISCOVERY_LAYOUT_BOUNDS,
   applyPositionMapToNodes,
 } from "@/lib/graphLayout";
+import {
+  computeConstellationGalaxyLayout,
+  computeInnerSatelliteLayout,
+  computePastContextOrbit,
+  computeSatelliteNodeLayout,
+  getNodeDepthScale,
+  getOrbitRingRadii,
+  getOrbitalVisualState,
+  CONSTELLATION_ORBIT_BASE_RADIUS,
+  CONSTELLATION_ORBIT_RADIUS_STEP,
+  SATELLITE_ORBIT_BASE_RADIUS,
+  SATELLITE_ORBIT_RADIUS_STEP,
+} from "@/lib/orbitalLayout";
 import { getConstellationTheme, themeChildEdgeStroke } from "@/lib/constellationTheme";
-import { normalizeCanvasDisplayTitle } from "@/lib/normalizeDisplayTitle";
+import { simplifyDisplayLabel } from "@/lib/simplifyDisplayLabel";
+import {
+  toCreatorNodeLabel,
+  sanitizeCreatorCopy,
+  formatCreatorCategory,
+} from "@/lib/creatorCopy";
+import {
+  approveSafeRippleOperations,
+  canOpenWorldEvolutionPreview,
+} from "@/lib/rippleUserFlow";
+import {
+  buildWorldChangeDryRunBundle,
+  canAutoApplyWorldChange,
+  isRipplePreviewEmpty,
+} from "@/lib/worldChangeFlow";
+import {
+  buildWorldChangeCardModel,
+  buildFailedWorldChangeCardModel,
+  buildPendingWorldChangeCardModel,
+  getWorldChangeUserMessage,
+} from "@/lib/worldChangeModel";
+import {
+  computeDetailPanelInset,
+  computeDetailPanelWidth,
+  SIDEBAR_WIDTH_PX,
+} from "@/lib/detailPanelLayout";
 import type {
   AiDiscovery,
   DiscoveryAction,
@@ -190,10 +229,8 @@ function nearestZoomLevel(zoom: number): number {
   );
 }
 
-// Trail (discovery-mode) layout — PAST ← CURRENT → FUTURE
+// Trail (discovery-mode) orbital layout
 const PAST_STEP_X = 165;
-const FUTURE_X = 185;
-const FUTURE_ROW_H = 72;
 
 const CONSEQUENCE_EDGE_STYLE = {
   stroke: "rgba(45, 212, 191, 0.55)",
@@ -202,18 +239,18 @@ const CONSEQUENCE_EDGE_STYLE = {
 } as const;
 
 const TRAIL_EDGE_STYLE = {
-  stroke: "rgba(167, 139, 250, 0.6)",
-  strokeWidth: 2,
+  stroke: "rgba(167, 139, 250, 0.72)",
+  strokeWidth: 2.5,
 } as const;
 
 const FUTURE_EDGE_STYLE = {
-  stroke: "rgba(148, 163, 184, 0.35)",
-  strokeWidth: 1,
+  stroke: "rgba(148, 163, 184, 0.45)",
+  strokeWidth: 1.5,
   strokeDasharray: "5 4",
 } as const;
 
 const PAST_EDGE_STYLE = {
-  stroke: "rgba(100, 116, 139, 0.35)",
+  stroke: "rgba(100, 116, 139, 0.42)",
   strokeWidth: 1.5,
 } as const;
 
@@ -222,6 +259,8 @@ const nodeTypes = {
   discovery: DiscoveryNode,
   consequence: ConsequenceNode,
   trailNode: TrailNode,
+  orbitRing: OrbitRingNode,
+  ghostOrbit: GhostOrbitNode,
 };
 
 type ConstellationCanvasProps = {
@@ -346,8 +385,8 @@ function buildAvailableNodesForNodeReasoner(
   return nodes;
 }
 
-function canvasNodeLabel(title: string): string {
-  return normalizeCanvasDisplayTitle(title);
+function canvasNodeLabel(title: string, worldSeed = "", category?: string): string {
+  return toCreatorNodeLabel(title, { title, worldSeed, category });
 }
 
 export default function ConstellationCanvas({
@@ -372,6 +411,7 @@ export default function ConstellationCanvas({
   );
   const [acceptedIds, setAcceptedIds] = useState<string[]>([]);
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
+  const [canonRipplePulseIds, setCanonRipplePulseIds] = useState<Set<string>>(new Set());
   const [justAcceptedId, setJustAcceptedId] = useState<string | null>(null);
   const [justEmergedIds, setJustEmergedIds] = useState<Set<string>>(new Set());
   const [creatorTruths, setCreatorTruths] = useState<string[]>([]);
@@ -421,7 +461,7 @@ export default function ConstellationCanvas({
   const [reasoningConstellationId, setReasoningConstellationId] = useState<
     string | null
   >(null);
-  const [constellationReasonerErrors, setConstellationReasonerErrors] = useState<
+  const [constellationReasonerHints, setConstellationReasonerHints] = useState<
     Record<string, string>
   >({});
   const [isReasoningNode, setIsReasoningNode] = useState(false);
@@ -446,6 +486,16 @@ export default function ConstellationCanvas({
     null,
   );
   const [ripplePreviewPanelOpen, setRipplePreviewPanelOpen] = useState(false);
+  const [rippleConsequenceCardOpen, setRippleConsequenceCardOpen] = useState(false);
+  const [pendingEvolutionOpen, setPendingEvolutionOpen] = useState(false);
+  const [worldChangeStatusMessage, setWorldChangeStatusMessage] = useState<string | null>(
+    null,
+  );
+  const [isApplyingWorldChange, setIsApplyingWorldChange] = useState(false);
+  const [rippleReviewMessage, setRippleReviewMessage] = useState<string | null>(null);
+  const [worldChangeCardPhase, setWorldChangeCardPhase] = useState<
+    "idle" | "pending" | "ready" | "failed"
+  >("idle");
   const [isGeneratingRipplePreview, setIsGeneratingRipplePreview] = useState(false);
   const [ripplePreviewError, setRipplePreviewError] = useState<string | null>(
     null,
@@ -453,7 +503,7 @@ export default function ConstellationCanvas({
   const [latestRippleTriggerEventId, setLatestRippleTriggerEventId] = useState<
     string | null
   >(null);
-  const [evolutionPreviewPanelOpen, setEvolutionPreviewPanelOpen] = useState(true);
+  const [evolutionPreviewPanelOpen, setEvolutionPreviewPanelOpen] = useState(false);
   const [isApplyingWorldEvolution, setIsApplyingWorldEvolution] = useState(false);
   const [worldEvolutionApplyError, setWorldEvolutionApplyError] = useState<string | null>(
     null,
@@ -563,13 +613,13 @@ export default function ConstellationCanvas({
 
       setIsReasoningConstellation(true);
       setReasoningConstellationId(id);
-      setConstellationReasonerErrors((prev) => {
+      setConstellationReasonerHints((prev) => {
         const next = { ...prev };
         delete next[id];
         return next;
       });
 
-      try {
+      const requestReasoner = async () => {
         const res = await fetch("/api/world/constellation-reasoner", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -582,30 +632,76 @@ export default function ConstellationCanvas({
             existingCanon: [],
           }),
         });
-
-        const data = (await res.json()) as {
+        return (await res.json()) as {
           success?: boolean;
           output?: ConstellationReasonerOutput;
           error?: string;
         };
+      };
+
+      try {
+        let data = await requestReasoner();
+        if (!data.success || !data.output) {
+          data = await requestReasoner();
+        }
 
         if (reasonerRequestGenRef.current[id] !== nextGen) return;
 
         if (!data.success || !data.output) {
-          setConstellationReasonerErrors((prev) => ({
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[constellation-reasoner] failed", {
+            constellationId: id,
+            reason: "api_no_output",
+            detail: data.error,
+          });
+        }
+          const { branches } = buildArchitectureBranches(architectureCanvasModel);
+          const archBranches = branches[id];
+          const ns = navStateRef.current;
+          if (
+            archBranches?.length &&
+            ns.mode === "discovery" &&
+            ns.regionId === id
+          ) {
+            setAiBranches((prev) => ({
+              ...prev,
+              [id]: prev[id]?.length ? prev[id] : archBranches,
+            }));
+          }
+          setConstellationReasonerHints((prev) => ({
             ...prev,
-            [id]: "Could not deepen this constellation yet. Showing initial nodes.",
+            [id]: "Nearby discoveries are ready to explore.",
           }));
           return;
         }
 
         setReasonedConstellations((prev) => ({ ...prev, [id]: data.output! }));
         applyReasonedOutput(id, data.output);
-      } catch {
+      } catch (error) {
         if (reasonerRequestGenRef.current[id] === nextGen) {
-          setConstellationReasonerErrors((prev) => ({
+          if (process.env.NODE_ENV === "development") {
+            console.debug("[constellation-reasoner] threw", {
+              constellationId: id,
+              reason: "exception",
+              detail: error,
+            });
+          }
+          const { branches } = buildArchitectureBranches(architectureCanvasModel);
+          const archBranches = branches[id];
+          const ns = navStateRef.current;
+          if (
+            archBranches?.length &&
+            ns.mode === "discovery" &&
+            ns.regionId === id
+          ) {
+            setAiBranches((prev) => ({
+              ...prev,
+              [id]: prev[id]?.length ? prev[id] : archBranches,
+            }));
+          }
+          setConstellationReasonerHints((prev) => ({
             ...prev,
-            [id]: "Could not deepen this constellation yet. Showing initial nodes.",
+            [id]: "Nearby discoveries are ready to explore.",
           }));
         }
       } finally {
@@ -700,7 +796,18 @@ export default function ConstellationCanvas({
 
   const rfInstance = useRef<ReactFlowInstance | null>(null);
 
-  const panelInset = selectedItem ? 320 : 0;
+  const [viewportWidth, setViewportWidth] = useState(
+    typeof window !== "undefined" ? window.innerWidth : 1280,
+  );
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const panelInset = computeDetailPanelInset(viewportWidth, Boolean(selectedItem));
+  const detailPanelWidth = computeDetailPanelWidth(viewportWidth);
+  const canvasRightInset = panelInset > 0 ? `${panelInset}px` : "0";
 
   const handleViewportChange = useCallback((viewport: { zoom: number }) => {
     setZoomPct(Math.round(viewport.zoom * 100));
@@ -765,7 +872,7 @@ export default function ConstellationCanvas({
     setReasoningNodeId(parentId);
     setNodeReasonerError(null);
 
-    try {
+    const requestNodeReasoner = async () => {
       const reasoned = reasonedConstellations[constellationId];
       const availableNodes = buildAvailableNodesForNodeReasoner(
         constellationId,
@@ -792,16 +899,30 @@ export default function ConstellationCanvas({
         }),
       });
 
-      const data = (await res.json()) as {
+      return (await res.json()) as {
         success?: boolean;
         output?: NodeReasonerOutput;
         error?: string;
       };
+    };
+
+    try {
+      let data = await requestNodeReasoner();
+      if (!data.success || !data.output) {
+        data = await requestNodeReasoner();
+      }
 
       if (nodeReasonerRequestGenRef.current[parentId] !== nextGen) return;
 
       if (!data.success || !data.output) {
-        setNodeReasonerError("Could not deepen this node yet.");
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[node-reasoner] failed", {
+            parentId,
+            reason: "api_no_output",
+            detail: data.error,
+          });
+        }
+        setNodeReasonerError("This path needs one more clue. Try steering it.");
         return;
       }
 
@@ -810,9 +931,16 @@ export default function ConstellationCanvas({
         [parentId]: data.output!,
       }));
       applyNodeReasonerOutput(parentId, data.output, constellationId);
-    } catch {
+    } catch (error) {
       if (nodeReasonerRequestGenRef.current[parentId] === nextGen) {
-        setNodeReasonerError("Could not deepen this node yet.");
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[node-reasoner] threw", {
+            parentId,
+            reason: "exception",
+            detail: error,
+          });
+        }
+        setNodeReasonerError("This path needs one more clue. Try steering it.");
       }
     } finally {
       if (nodeReasonerRequestGenRef.current[parentId] === nextGen) {
@@ -921,9 +1049,42 @@ export default function ConstellationCanvas({
       );
 
     const orbitCenter = CONSTELLATION_ORBIT_CENTER;
+    const focusCenter = isConstellationRootView ? orbitCenter : { x: 0, y: 0 };
+    const explorationDepth = trail.length;
+    const depthScale = getNodeDepthScale(explorationDepth);
 
     const allFlatBranches = Object.values(aiBranches).flat();
     const allNrBranches = Object.values(nodeReasonerBranchesByParentId).flat();
+
+    const pastTrailIds = trail.slice(0, -1);
+    const pastOrbitPositions = computePastContextOrbit(
+      pastTrailIds.length,
+      focusCenter,
+      focusedId,
+    );
+
+    const buildOrbitalTrailData = (
+      params: {
+        role: TrailNodeData["role"];
+        journeyPhase: TrailNodeData["journeyPhase"];
+        decision: TrailNodeData["decision"];
+        weakened?: boolean;
+        rippleState?: TrailNodeData["rippleState"];
+      },
+    ): Pick<TrailNodeData, "depthScale" | "orbitalVisualState"> => ({
+      depthScale,
+      orbitalVisualState: getOrbitalVisualState({
+        role: params.role,
+        decision: params.decision,
+        journeyPhase: params.journeyPhase,
+        weakened: params.weakened,
+        isConstellationRoot: isConstellationRootView && params.role === "focused",
+        rippleActive: Boolean(params.rippleState),
+      }),
+    });
+
+    const isWorldRippleActive =
+      worldChangeCardPhase === "pending" || isGeneratingRipplePreview;
 
     // PAST + CURRENT: walked path
     trail.forEach((id, i) => {
@@ -959,27 +1120,35 @@ export default function ConstellationCanvas({
             }
           : null);
       const isFocused = i === trail.length - 1;
+      const pastIndex = pastTrailIds.indexOf(id);
+      const pastPos = pastIndex >= 0 ? pastOrbitPositions[pastIndex] : null;
       const x = isFocused
-        ? isConstellationRootView
-          ? orbitCenter.x
-          : 0
-        : (i - pastCount) * PAST_STEP_X +
-          (isConstellationRootView ? orbitCenter.x : 0);
-      const y = isFocused && isConstellationRootView ? orbitCenter.y : 0;
+        ? focusCenter.x
+        : pastPos?.x ?? focusCenter.x - PAST_STEP_X * Math.max(0, pastCount - i);
+      const y = isFocused ? focusCenter.y : pastPos?.y ?? focusCenter.y;
 
+      const trailDecision = decisions[id] ?? "pending";
       nodes.push({
         id,
         type: "trailNode",
         position: { x, y },
         data: {
-          title: canvasNodeLabel(meta?.title || "Untitled Branch"),
-          category: meta?.category,
+          title: canvasNodeLabel(meta?.title || "Untitled Branch", worldSeed, meta?.category),
+          category: formatCreatorCategory(meta?.category),
           role: isFocused ? "focused" : "path",
-          decision: decisions[id] ?? "pending",
+          decision: trailDecision,
           justAccepted: id === justAcceptedId,
+          isRipplePulse: canonRipplePulseIds.has(id),
+          isWorldRippleDimmed: isWorldRippleActive && id !== focusedId && !canonRipplePulseIds.has(id),
           hasCreatorDirection: Boolean(creatorDirections[id]),
           journeyPhase: isFocused ? "current" : "past",
           accentColor,
+          ...buildOrbitalTrailData({
+            role: isFocused ? "focused" : "path",
+            journeyPhase: isFocused ? "current" : "past",
+            decision: trailDecision,
+            weakened: weakenedIds.has(id),
+          }),
         } satisfies TrailNodeData,
         draggable: false,
         selectable: true,
@@ -991,6 +1160,7 @@ export default function ConstellationCanvas({
           id: `trail-${trail[i - 1]}-${id}`,
           source: trail[i - 1],
           target: id,
+          type: "smoothstep",
           animated: isFocused,
           style: isFocused ? themedTrailEdge : PAST_EDGE_STYLE,
         });
@@ -1031,21 +1201,40 @@ export default function ConstellationCanvas({
       ...aiFutures.map((b) => ({ id: b.id, kind: "direction" as const, ai: true as const, branch: b })),
     ];
 
-    const orbitalPositions = isConstellationRootView
-      ? computeOrbitalPositions(futureIds.length, {
-          centerX: orbitCenter.x,
-          centerY: orbitCenter.y,
+    const nrFutures = (nodeReasonerBranchesByParentId[focusedId] ?? []).filter(
+      (b) =>
+        !hiddenIds.has(b.id) &&
+        decisions[b.id] !== "rejected" &&
+        !trail.includes(b.id),
+    );
+
+    const totalSatelliteCount = futureIds.length + nrFutures.length;
+    const planetOrbitPositions = isConstellationRootView
+      ? computeConstellationGalaxyLayout(futureIds.length, {
+          center: focusCenter,
           phaseSeed: focusedId,
+          depthLevel: explorationDepth,
         })
-      : null;
-    const yPositions = computeFutureYPositions(futureIds.length, FUTURE_ROW_H);
+      : computeSatelliteNodeLayout(futureIds.length, {
+          center: focusCenter,
+          phaseSeed: focusedId,
+          depthLevel: explorationDepth,
+        });
+
+    const moonOrbitPositions =
+      nrFutures.length > 0
+        ? computeInnerSatelliteLayout(nrFutures.length, {
+            center: focusCenter,
+            phaseSeed: `${focusedId}_moons`,
+            depthLevel: explorationDepth + 1,
+          })
+        : [];
 
     futureIds.forEach((item, j) => {
       const { id, kind, ai, branch: aiBranch } = item;
-      const position = orbitalPositions
-        ? (orbitalPositions[j] ?? { x: FUTURE_X, y: 0 })
-        : { x: FUTURE_X, y: yPositions[j] ?? 0 };
+      const position = planetOrbitPositions[j] ?? focusCenter;
       const meta = resolveNodeMeta(id);
+      const futureDecision = decisions[id] ?? "pending";
 
       nodes.push({
         id,
@@ -1056,19 +1245,35 @@ export default function ConstellationCanvas({
             aiBranch
               ? (nodeOverrides[aiBranch.id]?.title ?? (aiBranch.title || "Untitled Branch"))
               : (nodeOverrides[id]?.title ?? meta?.title ?? "Untitled Branch"),
+            worldSeed,
+            aiBranch?.domain ?? meta?.category,
           ),
           category: aiBranch
-            ? `✦ ${aiBranch.sourceAgent ?? "Agent-shaped"}`
-            : (meta?.category ?? (kind === "consequence" ? "Consequence" : undefined)),
+            ? formatCreatorCategory(aiBranch.domain) ?? "Emergent Discovery"
+            : formatCreatorCategory(meta?.category ?? (kind === "consequence" ? "Narrative Pressure" : undefined)),
           role: kind,
-          decision: decisions[id] ?? "pending",
+          decision: futureDecision,
           justEmerged: justEmergedIds.has(id),
+          isForming: justEmergedIds.has(id),
+          isRipplePulse: canonRipplePulseIds.has(id),
+          isWorldRippleDimmed:
+            isWorldRippleActive && !justEmergedIds.has(id) && !canonRipplePulseIds.has(id),
           hasCreatorDirection: Boolean(creatorDirections[id]),
           journeyPhase: "future",
           aiGenerated: ai,
           weakened: weakenedIds.has(id),
           nodeModified: Boolean(nodeOverrides[id]),
           accentColor,
+          isInactiveBranch:
+            futureDecision === "pending" &&
+            !justEmergedIds.has(id) &&
+            !weakenedIds.has(id),
+          ...buildOrbitalTrailData({
+            role: kind,
+            journeyPhase: "future",
+            decision: futureDecision,
+            weakened: weakenedIds.has(id),
+          }),
         } satisfies TrailNodeData,
         draggable: false,
         selectable: true,
@@ -1079,6 +1284,7 @@ export default function ConstellationCanvas({
         id: `future-${focusedId}-${id}`,
         source: focusedId,
         target: id,
+        type: "smoothstep",
         animated: kind === "consequence" || ai,
         style: ai
           ? themedAiEdge
@@ -1088,19 +1294,11 @@ export default function ConstellationCanvas({
       });
     });
 
-    const nrFutures = (nodeReasonerBranchesByParentId[focusedId] ?? []).filter(
-      (b) =>
-        !hiddenIds.has(b.id) &&
-        decisions[b.id] !== "rejected" &&
-        !trail.includes(b.id),
-    );
-
-    nrFutures.forEach((branch) => {
-      const position = nodeReasonerChildPositions[branch.id] ?? {
-        x: FUTURE_X,
-        y: 0,
-      };
+    nrFutures.forEach((branch, index) => {
+      const position = moonOrbitPositions[index] ?? focusCenter;
       const meta = nodeReasonerPanelMeta[branch.id];
+      const nrDecision = decisions[branch.id] ?? "pending";
+      const satelliteDepthScale = getNodeDepthScale(explorationDepth + 1);
 
       nodes.push({
         id: branch.id,
@@ -1112,17 +1310,33 @@ export default function ConstellationCanvas({
             meta?.displayTitle ??
             branch.title ??
             "Untitled Branch",
+            worldSeed,
+            branch.domain,
           ),
-          category: `✦ ${branch.sourceAgent ?? "Node Reasoner"}`,
+          category: formatCreatorCategory(branch.domain) ?? "Living Thread",
           role: "direction",
-          decision: decisions[branch.id] ?? "pending",
+          decision: nrDecision,
           justEmerged: justEmergedIds.has(branch.id),
+          isForming: justEmergedIds.has(branch.id),
+          isRipplePulse: canonRipplePulseIds.has(branch.id),
+          isWorldRippleDimmed:
+            isWorldRippleActive &&
+            !justEmergedIds.has(branch.id) &&
+            !canonRipplePulseIds.has(branch.id),
           hasCreatorDirection: Boolean(creatorDirections[branch.id]),
           journeyPhase: "future",
           aiGenerated: true,
           weakened: weakenedIds.has(branch.id),
           nodeModified: Boolean(nodeOverrides[branch.id]),
           accentColor,
+          isInactiveBranch: nrDecision === "pending" && !justEmergedIds.has(branch.id),
+          depthScale: satelliteDepthScale,
+          orbitalVisualState: getOrbitalVisualState({
+            role: "direction",
+            decision: nrDecision,
+            journeyPhase: "future",
+            weakened: weakenedIds.has(branch.id),
+          }),
         } satisfies TrailNodeData,
         draggable: false,
         selectable: true,
@@ -1133,10 +1347,68 @@ export default function ConstellationCanvas({
         id: `nr-future-${focusedId}-${branch.id}`,
         source: focusedId,
         target: branch.id,
+        type: "smoothstep",
         animated: true,
         style: themedNrEdge,
       });
     });
+
+    const totalSatellites = totalSatelliteCount;
+    if (totalSatellites > 0) {
+      const orbitBase = isConstellationRootView
+        ? CONSTELLATION_ORBIT_BASE_RADIUS
+        : SATELLITE_ORBIT_BASE_RADIUS;
+      const orbitStep = isConstellationRootView
+        ? CONSTELLATION_ORBIT_RADIUS_STEP
+        : SATELLITE_ORBIT_RADIUS_STEP;
+      const ringRadii = getOrbitRingRadii(
+        totalSatellites,
+        orbitBase * depthScale,
+        orbitStep,
+      );
+      ringRadii.forEach((radius, ringIndex) => {
+        nodes.unshift({
+          id: `orbit-ring-${focusedId}-${ringIndex}`,
+          type: "orbitRing",
+          position: { x: focusCenter.x, y: focusCenter.y },
+          data: {
+            radius,
+            accentColor: constellationTheme?.line ?? accentColor,
+            ringIndex,
+            showDust: true,
+          },
+          draggable: false,
+          selectable: false,
+          zIndex: 0,
+        });
+      });
+    }
+
+    const minVisualSlots = isConstellationRootView ? 5 : 4;
+    if (totalSatellites > 0 && totalSatellites < minVisualSlots) {
+      const ghostLayout = isConstellationRootView
+        ? computeConstellationGalaxyLayout(minVisualSlots, {
+            center: focusCenter,
+            phaseSeed: `${focusedId}_ghost`,
+            depthLevel: explorationDepth,
+          })
+        : computeInnerSatelliteLayout(minVisualSlots, {
+            center: focusCenter,
+            phaseSeed: `${focusedId}_ghost_moon`,
+            depthLevel: explorationDepth + 1,
+          });
+      ghostLayout.slice(totalSatellites).forEach((position, index) => {
+        nodes.unshift({
+          id: `ghost-orbit-${focusedId}-${index}`,
+          type: "ghostOrbit",
+          position,
+          data: { accentColor: constellationTheme?.line ?? accentColor },
+          draggable: false,
+          selectable: false,
+          zIndex: 1,
+        });
+      });
+    }
 
     const layoutBounds = {
       ...DISCOVERY_LAYOUT_BOUNDS,
@@ -1153,7 +1425,7 @@ export default function ConstellationCanvas({
     });
 
     return { nodes: applyPositionMapToNodes(nodes, fitted), edges };
-  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds, aiBranches, weakenedIds, nodeOverrides, dynamicConstellations, architectureCanvasModel, nodeReasonerBranchesByParentId, nodeReasonerChildPositions, nodeReasonerPanelMeta, selectedItem]);
+  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds, aiBranches, weakenedIds, nodeOverrides, dynamicConstellations, architectureCanvasModel, nodeReasonerBranchesByParentId, nodeReasonerPanelMeta, selectedItem, worldSeed, canonRipplePulseIds, worldChangeCardPhase, isGeneratingRipplePreview]);
 
   // ── Canon layout: living evolution tree ─────────────────────────────────────
   const worldState = useMemo(
@@ -1266,7 +1538,7 @@ export default function ConstellationCanvas({
             ...node.data,
             icon: regionDef?.icon ?? (node.data as { icon?: string }).icon ?? "✦",
             label: archConst?.displayTitle
-              ? normalizeCanvasDisplayTitle(archConst.displayTitle)
+              ? simplifyDisplayLabel(archConst.displayTitle)
               : (node.data as { label?: string }).label,
             vitalityDots,
           },
@@ -1446,8 +1718,10 @@ export default function ConstellationCanvas({
     (constellation: CanvasConstellation) => {
       const displayTitle = canvasNodeLabel(
         constellation.displayTitle || constellation.title,
+        worldSeed,
+        "Constellation",
       );
-      setConstellationReasonerErrors((prev) => {
+      setConstellationReasonerHints((prev) => {
         const next = { ...prev };
         delete next[constellation.id];
         return next;
@@ -1627,7 +1901,7 @@ export default function ConstellationCanvas({
   );
 
   const getDisplayTitle = useCallback(
-    (id: string) => resolveNodeMetaExt(id)?.title ?? "Untitled Branch",
+    (id: string) => simplifyDisplayLabel(resolveNodeMetaExt(id)?.title ?? "Untitled Branch"),
     [resolveNodeMetaExt],
   );
 
@@ -1713,7 +1987,11 @@ export default function ConstellationCanvas({
   );
 
   const requestRipplePreview = useCallback(
-    async (event: UserDecisionEvent, updatedLog: DecisionEventLog) => {
+    async (
+      event: UserDecisionEvent,
+      updatedLog: DecisionEventLog,
+      options?: { optimistic?: boolean },
+    ) => {
       if (!architectureCanvasModel) return;
 
       const requestGen = rippleRequestGenRef.current + 1;
@@ -1721,6 +1999,13 @@ export default function ConstellationCanvas({
 
       setRipplePreview(null);
       setRipplePreviewPanelOpen(false);
+      if (!options?.optimistic) {
+        setRippleConsequenceCardOpen(false);
+        setWorldChangeCardPhase("idle");
+      }
+      setRippleReviewMessage(null);
+      setWorldChangeStatusMessage(null);
+      setPendingEvolutionOpen(false);
       setRipplePreviewError(null);
       setIsGeneratingRipplePreview(true);
       setLatestRippleTriggerEventId(event.id);
@@ -1749,7 +2034,10 @@ export default function ConstellationCanvas({
 
       if (result.ok) {
         setRipplePreview(result.preview);
-        setRipplePreviewPanelOpen(true);
+        setRippleConsequenceCardOpen(true);
+        setWorldChangeCardPhase("ready");
+        setRipplePreviewPanelOpen(false);
+        setEvolutionPreviewPanelOpen(false);
         setRipplePreviewError(null);
         if (process.env.NODE_ENV === "development") {
           console.debug("[ripple-preview] ready", {
@@ -1759,7 +2047,13 @@ export default function ConstellationCanvas({
           });
         }
       } else {
-        setRipplePreviewError(result.error);
+        if (options?.optimistic) {
+          setWorldChangeCardPhase("failed");
+          setRippleConsequenceCardOpen(true);
+          setRipplePreviewError(null);
+        } else {
+          setRipplePreviewError("The world needs more context before evolving.");
+        }
         if (process.env.NODE_ENV === "development") {
           console.debug("[ripple-preview] failed", event.id, result.error);
         }
@@ -1778,10 +2072,44 @@ export default function ConstellationCanvas({
     setRipplePreviewError(null);
     setIsGeneratingRipplePreview(false);
     setLatestRippleTriggerEventId("dev_mock_ripple_preview");
-    setEvolutionPreviewPanelOpen(true);
+    setEvolutionPreviewPanelOpen(false);
+    setRipplePreviewPanelOpen(false);
     setRipplePreview(buildMemoryEconomyRipplePreviewFixture());
-    setRipplePreviewPanelOpen(true);
+    setRippleConsequenceCardOpen(true);
   }, []);
+
+  useEffect(() => {
+    if (!pendingEvolutionOpen || !ripplePreview) return;
+    if (canOpenWorldEvolutionPreview(ripplePreview)) {
+      setEvolutionPreviewPanelOpen(true);
+    } else {
+      setEvolutionPreviewPanelOpen(false);
+    }
+    setPendingEvolutionOpen(false);
+  }, [ripplePreview, pendingEvolutionOpen]);
+
+  const handleDeclineWorldChange = useCallback(() => {
+    setRippleConsequenceCardOpen(false);
+    setWorldChangeCardPhase("idle");
+    setRippleReviewMessage(null);
+    setWorldChangeStatusMessage(null);
+    setRipplePreviewPanelOpen(false);
+    setEvolutionPreviewPanelOpen(false);
+    setPendingEvolutionOpen(false);
+  }, []);
+
+  const handleWorldChangeAdvancedDetails = useCallback(() => {
+    setRippleConsequenceCardOpen(false);
+    setRipplePreviewPanelOpen(true);
+    if (ripplePreview) {
+      const approved = approveSafeRippleOperations(ripplePreview);
+      if (canOpenWorldEvolutionPreview(approved)) {
+        setEvolutionPreviewPanelOpen(true);
+      } else {
+        setEvolutionPreviewPanelOpen(false);
+      }
+    }
+  }, [ripplePreview]);
 
   const rippleTitleMaps = useMemo(
     () =>
@@ -1845,6 +2173,17 @@ export default function ConstellationCanvas({
     nodeConstellationMap,
     rippleTitleMaps.nodeTitleById,
   ]);
+
+  const worldChangeCardModel = useMemo(() => {
+    if (worldChangeCardPhase === "pending") {
+      return buildPendingWorldChangeCardModel();
+    }
+    if (worldChangeCardPhase === "failed") {
+      return buildFailedWorldChangeCardModel();
+    }
+    if (!ripplePreview) return null;
+    return buildWorldChangeCardModel(ripplePreview, worldEvolutionApplyDryRun);
+  }, [worldChangeCardPhase, ripplePreview, worldEvolutionApplyDryRun]);
 
   const syncEvolutionOverlayToUi = useCallback(
     (
@@ -2082,6 +2421,100 @@ export default function ConstellationCanvas({
     ],
   );
 
+  const handleAcceptWorldChange = useCallback(() => {
+    if (!ripplePreview || !architectureCanvasModel) return;
+
+    if (isRipplePreviewEmpty(ripplePreview)) {
+      setRippleConsequenceCardOpen(false);
+      setWorldChangeStatusMessage(null);
+      return;
+    }
+
+    const bundle = buildWorldChangeDryRunBundle({
+      preview: ripplePreview,
+      canvasModel: architectureCanvasModel,
+      decisionEventLog,
+      nodeTitleById: rippleTitleMaps.nodeTitleById,
+      nodeConstellationMap,
+    });
+
+    setRipplePreview(bundle.approvedPreview);
+
+    if (!canOpenWorldEvolutionPreview(bundle.approvedPreview)) {
+      setWorldChangeStatusMessage(getWorldChangeUserMessage("review_needed"));
+      return;
+    }
+
+    if (!canAutoApplyWorldChange(bundle)) {
+      setWorldChangeStatusMessage(getWorldChangeUserMessage("review_needed"));
+      return;
+    }
+
+    setIsApplyingWorldChange(true);
+    setWorldChangeStatusMessage(null);
+
+    try {
+      const currentCanvasFingerprint = createCanvasEvolutionFingerprint(
+        architectureCanvasModel,
+      );
+      const dryRun = bundle.dryRun!;
+
+      if (
+        dryRun.canvasFingerprint &&
+        dryRun.canvasFingerprint !== currentCanvasFingerprint
+      ) {
+        setWorldChangeStatusMessage(getWorldChangeUserMessage("review_needed"));
+        return;
+      }
+
+      const result = applyWorldEvolutionPatches({
+        canvasModel: architectureCanvasModel,
+        dryRun,
+        confirmed: true,
+        selectedPatchIds: bundle.readyPatchIds,
+        allowNeedsReviewPatches: false,
+        canonState: summarizeCanonStateFromEventLog(decisionEventLog),
+        planId: bundle.plan?.id,
+        triggerEventId: bundle.plan?.triggerEventId,
+        evolutionPolicy: bundle.plan?.policy,
+        currentCanvasFingerprint,
+      });
+
+      setLastWorldEvolutionApplyResult(result);
+
+      if (result.status === "applied") {
+        setEvolutionAppliedCanvasModel(result.canvasModel);
+        syncEvolutionOverlayToUi(result.canvasModel, { mode: "apply" });
+        setEvolutionHistoryEntries((prev) => [...prev, result.historyEntry]);
+        setRippleConsequenceCardOpen(false);
+        setWorldChangeCardPhase("idle");
+        setWorldChangeStatusMessage(null);
+        setRipplePreviewPanelOpen(false);
+        setEvolutionPreviewPanelOpen(false);
+        setWorldEvolutionApplyError(null);
+      } else {
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[world-change] apply blocked", result);
+        }
+        setWorldChangeStatusMessage(getWorldChangeUserMessage("review_needed"));
+      }
+    } catch (error) {
+      if (process.env.NODE_ENV === "development") {
+        console.debug("[world-change] apply failed", error);
+      }
+      setWorldChangeStatusMessage(getWorldChangeUserMessage("review_needed"));
+    } finally {
+      setIsApplyingWorldChange(false);
+    }
+  }, [
+    ripplePreview,
+    architectureCanvasModel,
+    decisionEventLog,
+    rippleTitleMaps.nodeTitleById,
+    nodeConstellationMap,
+    syncEvolutionOverlayToUi,
+  ]);
+
   // ── Action handler ─────────────────────────────────────────────────────────
   const handleAction = useCallback(
     (action: DiscoveryAction) => {
@@ -2126,10 +2559,22 @@ export default function ConstellationCanvas({
       setDecisions((prev) => ({ ...prev, [id]: decision }));
 
       if (decisionEventResult && architectureCanvasModel) {
-        void requestRipplePreview(
-          decisionEventResult.event,
-          decisionEventResult.updatedLog,
-        );
+        if (action === "accept") {
+          setRippleConsequenceCardOpen(true);
+          setWorldChangeCardPhase("pending");
+          setRipplePreview(null);
+          setRipplePreviewError(null);
+          void requestRipplePreview(
+            decisionEventResult.event,
+            decisionEventResult.updatedLog,
+            { optimistic: true },
+          );
+        } else {
+          void requestRipplePreview(
+            decisionEventResult.event,
+            decisionEventResult.updatedLog,
+          );
+        }
       }
 
       // Accepting a weakened node overrides the weakened state — the creator is
@@ -2163,6 +2608,13 @@ export default function ConstellationCanvas({
 
         const stateMap = buildRippleStateMap(result, id);
         setRippleStates(stateMap);
+
+        const pulseTargets = new Set<string>([id]);
+        for (const childId of getChildren(id)) pulseTargets.add(childId);
+        for (const branch of aiBranches[id] ?? []) pulseTargets.add(branch.id);
+        for (const cons of ACCEPT_CONSEQUENCES[id] ?? []) pulseTargets.add(cons.id);
+        setCanonRipplePulseIds(pulseTargets);
+        window.setTimeout(() => setCanonRipplePulseIds(new Set()), 3200);
 
         const ts = Date.now();
         const feedEntries = buildFeedEntriesFromRipple(result, id, ts);
@@ -2779,35 +3231,13 @@ export default function ConstellationCanvas({
       {!(showOverviewOverlay) && (
         <WorldWhisper onSubmit={handleAddTruth} panelInset={panelInset} />
       )}
-      {navState.mode === "discovery" && (
-        <div
-          className="pointer-events-none absolute z-10 flex items-center justify-center gap-0"
-          style={{ left: "176px", right: "320px", top: "44px" }}
-        >
-          <div className="flex flex-1 justify-center">
-            <span className="rounded-full border border-slate-600/50 bg-slate-900/50 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400 shadow-[0_0_10px_rgba(100,116,139,0.1)]">
-              Past
-            </span>
-          </div>
-          <div className="flex flex-1 justify-center">
-            <span className="rounded-full border border-violet-500/50 bg-violet-950/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-violet-200 shadow-[0_0_24px_rgba(167,139,250,0.25)]">
-              Current
-            </span>
-          </div>
-          <div className="flex flex-1 justify-center">
-            <span className="rounded-full border border-slate-500/50 bg-slate-800/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-200 shadow-[0_0_16px_rgba(148,163,184,0.15)]">
-              Future
-            </span>
-          </div>
-        </div>
-      )}
       {navState.mode === "discovery" &&
         architectureCanvasModel &&
         isReasoningConstellation &&
         reasoningConstellationId === navState.regionId && (
           <div
             className="pointer-events-none absolute z-20 flex justify-center"
-            style={{ left: "176px", right: "320px", top: "78px" }}
+            style={{ left: `${SIDEBAR_WIDTH_PX}px`, right: canvasRightInset, top: "78px" }}
           >
             <span className="rounded-full border border-violet-500/40 bg-violet-950/60 px-4 py-1.5 text-[11px] text-violet-200 shadow-[0_0_20px_rgba(139,92,246,0.2)]">
               Reasoning inside {navState.discoveryTitle}…
@@ -2817,14 +3247,14 @@ export default function ConstellationCanvas({
       {navState.mode === "discovery" &&
         architectureCanvasModel &&
         navState.regionId &&
-        constellationReasonerErrors[navState.regionId] &&
+        constellationReasonerHints[navState.regionId] &&
         !isReasoningConstellation && (
           <div
             className="pointer-events-none absolute z-20 flex justify-center"
-            style={{ left: "176px", right: "320px", top: "78px" }}
+            style={{ left: `${SIDEBAR_WIDTH_PX}px`, right: canvasRightInset, top: "78px" }}
           >
-            <span className="rounded-full border border-amber-500/30 bg-amber-950/50 px-4 py-1.5 text-[11px] text-amber-200/90">
-              {constellationReasonerErrors[navState.regionId]}
+            <span className="rounded-full border border-slate-600/40 bg-slate-950/60 px-4 py-1.5 text-[11px] text-slate-300/90">
+              {constellationReasonerHints[navState.regionId]}
             </span>
           </div>
         )}
@@ -2834,7 +3264,7 @@ export default function ConstellationCanvas({
         reasoningNodeId && (
           <div
             className="pointer-events-none absolute z-20 flex justify-center"
-            style={{ left: "176px", right: selectedItem ? "320px" : "0", top: "78px" }}
+            style={{ left: `${SIDEBAR_WIDTH_PX}px`, right: canvasRightInset, top: "78px" }}
           >
             <span className="rounded-full border border-sky-500/40 bg-sky-950/60 px-4 py-1.5 text-[11px] text-sky-200 shadow-[0_0_20px_rgba(56,189,248,0.2)]">
               Exploring continuations…
@@ -2890,20 +3320,20 @@ export default function ConstellationCanvas({
         <button
           type="button"
           onClick={() => setArchDebugOpen((v) => !v)}
-          className="absolute bottom-4 z-20 rounded border border-slate-800/80 bg-slate-950/90 px-2.5 py-1 text-[9px] uppercase tracking-[0.14em] text-slate-600 transition hover:border-slate-700 hover:text-slate-400"
+          className="absolute bottom-4 z-20 rounded border border-slate-800/60 bg-slate-950/75 px-2 py-0.5 text-[8px] uppercase tracking-[0.12em] text-slate-700 opacity-60 transition hover:opacity-100 hover:text-slate-500"
           style={{ left: "184px" }}
         >
-          {archDebugOpen ? "Hide architecture debug" : "Architecture debug"}
+          {archDebugOpen ? "Hide debug" : "Debug"}
         </button>
       )}
       {process.env.NODE_ENV === "development" && (
         <button
           type="button"
           onClick={showMockRipplePreview}
-          className="absolute bottom-4 z-20 rounded border border-violet-900/50 bg-violet-950/40 px-2.5 py-1 text-[9px] uppercase tracking-[0.14em] text-violet-400/80 transition hover:border-violet-700 hover:text-violet-300"
-          style={{ left: architectureCanvasModel ? "320px" : "184px" }}
+          className="absolute bottom-4 z-20 rounded border border-slate-800/60 bg-slate-950/75 px-2 py-0.5 text-[8px] uppercase tracking-[0.12em] text-slate-700 opacity-60 transition hover:opacity-100 hover:text-slate-500"
+          style={{ left: architectureCanvasModel ? "248px" : "184px" }}
         >
-          Mock ripple preview
+          Mock ripple
         </button>
       )}
       {architectureCanvasModel && archDebugOpen && (
@@ -3015,10 +3445,14 @@ export default function ConstellationCanvas({
           nodeReasonerLoading={isReasoningNode && reasoningNodeId === selectedNodeId}
           nodeReasonerError={nodeReasonerError}
           hasNodeReasonerCache={hasNodeReasonerCache}
+          panelWidth={detailPanelWidth}
+          worldSeed={worldSeed}
         />
       )}
 
-      {(isGeneratingRipplePreview || ripplePreviewError || ripplePreview) && (
+      {(rippleConsequenceCardOpen && worldChangeCardModel) ||
+      (ripplePreview && (ripplePreviewPanelOpen || evolutionPreviewPanelOpen)) ||
+      (ripplePreviewError && !rippleConsequenceCardOpen) ? (
         <div
           className="pointer-events-none fixed inset-0 z-[70]"
           aria-live="polite"
@@ -3031,48 +3465,67 @@ export default function ConstellationCanvas({
               width: "min(360px, calc(100vw - 200px))",
             }}
           >
-            {isGeneratingRipplePreview && (
-              <div className="shrink-0 rounded-lg border border-violet-800/40 bg-slate-950/95 px-3 py-2 text-xs text-violet-200/90 shadow-lg">
-                Preparing ripple preview...
-              </div>
-            )}
-            {ripplePreviewError && !isGeneratingRipplePreview && (
-              <div className="flex shrink-0 items-start justify-between gap-2 rounded-lg border border-amber-800/40 bg-amber-950/25 px-3 py-2 text-xs text-amber-200/90 shadow-lg">
+            {ripplePreviewError && !rippleConsequenceCardOpen && (
+              <div className="flex shrink-0 items-start justify-between gap-2 rounded-lg border border-slate-700/50 bg-slate-950/95 px-3 py-2 text-xs text-slate-300 shadow-lg">
                 <span>{ripplePreviewError}</span>
                 <button
                   type="button"
                   onClick={() => setRipplePreviewError(null)}
-                  className="shrink-0 text-amber-400/70 transition hover:text-amber-200"
+                  className="shrink-0 text-slate-400/70 transition hover:text-slate-200"
                   aria-label="Dismiss ripple preview error"
                 >
                   ×
                 </button>
               </div>
             )}
-            {ripplePreview && !ripplePreviewPanelOpen && !isGeneratingRipplePreview && (
-              <button
-                type="button"
-                onClick={() => setRipplePreviewPanelOpen(true)}
-                className="shrink-0 rounded-lg border border-violet-700/50 bg-violet-950/50 px-3 py-2 text-left text-xs text-violet-200 shadow-lg transition hover:border-violet-500/60 hover:bg-violet-950/70"
-              >
-                <span className="font-medium">Ripple preview ready</span>
-                <span className="mt-0.5 block text-[10px] text-violet-300/70">
-                  {ripplePreview.counts.operationCount} operations ·{" "}
-                  {ripplePreview.counts.warningCount} warnings — tap to review
-                </span>
-              </button>
-            )}
+            {rippleConsequenceCardOpen && worldChangeCardModel && (
+                <WorldChangeCard
+                  model={worldChangeCardModel}
+                  onAccept={handleAcceptWorldChange}
+                  onDecline={handleDeclineWorldChange}
+                  onAdvancedDetails={handleWorldChangeAdvancedDetails}
+                  isApplying={isApplyingWorldChange}
+                  statusMessage={worldChangeStatusMessage}
+                  onClose={
+                    worldChangeCardPhase === "pending" ? undefined : handleDeclineWorldChange
+                  }
+                />
+              )}
+            {ripplePreview &&
+              !rippleConsequenceCardOpen &&
+              !ripplePreviewPanelOpen &&
+              !evolutionPreviewPanelOpen &&
+              !isGeneratingRipplePreview && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRippleConsequenceCardOpen(true);
+                    setWorldChangeStatusMessage(null);
+                  }}
+                  className="shrink-0 rounded-lg border border-violet-800/45 bg-violet-950/40 px-3 py-2 text-left text-xs text-violet-200/90 shadow-lg transition hover:border-violet-600/50 hover:bg-violet-950/55"
+                >
+                  <span className="font-medium">World changes pending</span>
+                  <span className="mt-0.5 block text-[10px] text-violet-300/60">
+                    Tap to review how this choice affects your world
+                  </span>
+                </button>
+              )}
             {ripplePreview && ripplePreviewPanelOpen && (
+              <>
+                {rippleReviewMessage && (
+                  <div className="shrink-0 rounded-lg border border-amber-900/35 bg-amber-950/20 px-3 py-2 text-xs text-amber-200/90 shadow-lg">
+                    {rippleReviewMessage}
+                  </div>
+                )}
               <RipplePreviewPanel
                 preview={ripplePreview}
                 onClose={() => setRipplePreviewPanelOpen(false)}
                 onApproveOperation={(operationId) => {
-                  setRipplePreview((prev) =>
-                    prev
-                      ? updateRippleOperationApproval(prev, operationId, "approved")
-                      : null,
-                  );
-                  setEvolutionPreviewPanelOpen(true);
+                  setRipplePreview((prev) => {
+                    if (!prev) return null;
+                    return updateRippleOperationApproval(prev, operationId, "approved");
+                  });
+                  setPendingEvolutionOpen(true);
                 }}
                 onRejectOperation={(operationId) => {
                   setRipplePreview((prev) =>
@@ -3100,25 +3553,12 @@ export default function ConstellationCanvas({
                   }
                 }}
               />
+              </>
             )}
             {worldEvolutionPreview?.canShowPreview &&
-              !isGeneratingRipplePreview &&
-              !evolutionPreviewPanelOpen && (
-                <button
-                  type="button"
-                  onClick={() => setEvolutionPreviewPanelOpen(true)}
-                  className="shrink-0 rounded-lg border border-cyan-700/50 bg-cyan-950/40 px-3 py-2 text-left text-xs text-cyan-200 shadow-lg transition hover:border-cyan-500/60 hover:bg-cyan-950/60"
-                >
-                  <span className="font-medium">Evolution preview ready</span>
-                  <span className="mt-0.5 block text-[10px] text-cyan-300/70">
-                    {worldEvolutionPreview.displayStatus} ·{" "}
-                    {worldEvolutionPreview.readyActions.length} ready ·{" "}
-                    {worldEvolutionPreview.blockers.length} blockers — tap to review
-                  </span>
-                </button>
-              )}
-            {worldEvolutionPreview?.canShowPreview &&
               evolutionPreviewPanelOpen &&
+              ripplePreview &&
+              canOpenWorldEvolutionPreview(ripplePreview) &&
               !isGeneratingRipplePreview && (
                 <WorldEvolutionPreviewPanel
                   preview={worldEvolutionPreview}
@@ -3144,7 +3584,7 @@ export default function ConstellationCanvas({
               )}
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* World Shift modal — shown after adaptation */}
       {adaptSummary && (

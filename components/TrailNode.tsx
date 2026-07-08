@@ -5,6 +5,8 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { DiscoveryDecision } from "@/types/discovery";
 import type { RippleState } from "@/lib/worldRipple";
 
+import type { OrbitalVisualState } from "@/lib/orbitalLayout";
+
 export type TrailRole = "focused" | "path" | "direction" | "consequence";
 
 export type TrailNodeData = {
@@ -26,6 +28,17 @@ export type TrailNodeData = {
   nodeModified?: boolean;
   /** Constellation accent for ring/glow (CSS color). */
   accentColor?: string;
+  depthScale?: number;
+  orbitalVisualState?: OrbitalVisualState;
+  isArchivedGhost?: boolean;
+  /** Unselected future branch — rendered softer on the canvas. */
+  isInactiveBranch?: boolean;
+  /** Newly emerged from ripple — forming animation. */
+  isForming?: boolean;
+  /** Brief pulse when canon ripple propagates. */
+  isRipplePulse?: boolean;
+  /** Dimmed while world-change ripple is computing. */
+  isWorldRippleDimmed?: boolean;
 };
 
 const SIZE: Record<TrailRole, number> = {
@@ -72,12 +85,22 @@ function TrailNode({ data, selected }: NodeProps) {
     weakened,
     nodeModified,
     accentColor,
+    depthScale = 1,
+    orbitalVisualState,
+    isArchivedGhost,
+    isInactiveBranch,
+    isForming = false,
+    isRipplePulse = false,
+    isWorldRippleDimmed = false,
   } = data as TrailNodeData;
 
-  const size = isCanonPath ? CANON_SIZE[role] : SIZE[role];
+  const baseSize = isCanonPath ? CANON_SIZE[role] : SIZE[role];
+  const size = Math.max(14, Math.round(baseSize * depthScale));
   const isPast = journeyPhase === "past";
   const isFuture = journeyPhase === "future";
   const isAccepted = decision === "accepted";
+  const isRejected = decision === "rejected";
+  const isCentralStar = orbitalVisualState === "central_star";
   const isSaved = decision === "saved";
   const isFocused = role === "focused";
   const isDirection = role === "direction";
@@ -109,8 +132,8 @@ function TrailNode({ data, selected }: NodeProps) {
               ? "border-sky-300/70 bg-sky-500/12"
               : hasAccent
                 ? ""
-                : isFocused || canonLayer === "origin"
-                  ? "border-violet-300/80 bg-violet-500/18"
+                : isFocused || canonLayer === "origin" || isCentralStar
+          ? "border-violet-300/80 bg-violet-500/18"
         : canonLayer === "theme"
           ? "border-amber-400/55 bg-amber-500/10"
           : canonLayer === "major_truth" || canonLayer === "domain_truth"
@@ -131,27 +154,31 @@ function TrailNode({ data, selected }: NodeProps) {
     ? {
         borderColor: accentColor,
         backgroundColor: `${accentColor}22`,
-        boxShadow: `0 0 16px ${accentColor}55`,
+        boxShadow: `0 0 20px ${accentColor}66, 0 0 36px ${accentColor}33`,
       }
     : undefined;
 
   const glow = rippleState
     ? "" // handled by animate-ripple-* classes
     : isAccepted
-      ? "shadow-[0_0_26px_rgba(52,211,153,0.45)]"
+      ? "shadow-[0_0_28px_rgba(52,211,153,0.5)]"
       : isConsequence
         ? justEmerged
-          ? "shadow-[0_0_28px_rgba(45,212,191,0.55)]"
-          : "shadow-[0_0_18px_rgba(45,212,191,0.35)]"
+          ? "shadow-[0_0_32px_rgba(45,212,191,0.6)]"
+          : "shadow-[0_0_22px_rgba(45,212,191,0.4)]"
         : isFocused
-          ? "shadow-[0_0_19px_rgba(167,139,250,0.38)]"
+          ? isCentralStar
+            ? "shadow-[0_0_36px_rgba(251,191,36,0.55),0_0_64px_rgba(167,139,250,0.35)]"
+            : "shadow-[0_0_30px_rgba(167,139,250,0.52)]"
           : isCanonPath
-            ? "shadow-[0_0_16px_rgba(167,139,250,0.3)]"
+            ? "shadow-[0_0_20px_rgba(167,139,250,0.35)]"
             : role === "path"
-              ? "shadow-[0_0_12px_rgba(167,139,250,0.22)]"
+              ? "shadow-[0_0_14px_rgba(167,139,250,0.28)]"
               : selected
-                ? "shadow-[0_0_16px_rgba(148,163,184,0.3)]"
-                : "";
+                ? "shadow-[0_0_18px_rgba(148,163,184,0.35)]"
+                : hasAccent
+                  ? ""
+                  : "";
 
   const coreColor = isAccepted
     ? "bg-emerald-300"
@@ -174,10 +201,18 @@ function TrailNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`group flex flex-col items-center gap-2 transition-all duration-300 ${
-        weakened
+        isArchivedGhost
+          ? "opacity-15 hover:opacity-30"
+          : isRejected
+            ? "opacity-20 line-through grayscale"
+            : weakened
           ? "opacity-30 hover:opacity-55 grayscale-[0.5]"
+            : isWorldRippleDimmed
+              ? "opacity-35 hover:opacity-55"
+            : isInactiveBranch
+            ? "opacity-50 hover:opacity-80"
           : isPast
-            ? "opacity-50 hover:opacity-75"
+            ? "opacity-45 hover:opacity-70"
             : isFuture
               ? isDirection
                 ? "opacity-85 hover:opacity-100"
@@ -189,7 +224,7 @@ function TrailNode({ data, selected }: NodeProps) {
                 : isConsequence
                   ? "opacity-90 hover:opacity-100"
                   : "opacity-100"
-      } ${justEmerged ? "animate-emerge" : ""}`}
+      } ${justEmerged || isForming ? "animate-emerge" : ""} ${isRipplePulse ? "animate-ripple-pulse" : ""}`}
     >
       <Handle type="target" position={Position.Left} className="!opacity-0" />
       <Handle type="source" position={Position.Right} className="!opacity-0" />
@@ -283,7 +318,7 @@ function TrailNode({ data, selected }: NodeProps) {
 
         {aiGenerated && !weakened && !rippleState && (
           <p className="mt-0.5 text-[8px] font-medium tracking-wider text-violet-400/75">
-            ✦ agent-shaped
+            ✦ Emergent Discovery
           </p>
         )}
 

@@ -119,7 +119,26 @@ export default function ConstellationRegionNode({ data }: NodeProps) {
       />
 
       {/* Ambient glow */}
-      <div className="absolute inset-0" style={{ background: theme.glow }} />
+      <div
+        className="absolute inset-0 rounded-2xl"
+        style={{
+          background: theme.glow,
+          boxShadow: isOverview
+            ? `0 0 48px ${theme.dot}33, inset 0 0 32px ${theme.dot}18`
+            : `0 0 64px ${theme.dot}44, inset 0 0 40px ${theme.dot}22`,
+        }}
+      />
+
+      {/* Core pulse ring (overview) */}
+      {isOverview && (
+        <div
+          className="pointer-events-none absolute inset-[-6px] rounded-[18px] opacity-50"
+          style={{
+            border: `1px solid ${theme.dot}55`,
+            boxShadow: `0 0 24px ${theme.dot}33`,
+          }}
+        />
+      )}
 
       {/* Hover ring (overview only) */}
       {isOverview && (
@@ -154,16 +173,17 @@ export default function ConstellationRegionNode({ data }: NodeProps) {
 
         <h2
           className={`whitespace-nowrap text-[22px] font-medium uppercase leading-none tracking-[0.32em] ${theme.labelClass}`}
-          style={{ textShadow: "0 0 24px rgba(255,255,255,0.08)" }}
+          style={{ textShadow: `0 0 28px ${theme.dot}88, 0 0 48px ${theme.dot}44` }}
         >
           {label}
         </h2>
 
         {/* Accent line */}
         <div
-          className="mt-3 h-px w-24 opacity-60"
+          className="mt-3 h-px w-28 opacity-80"
           style={{
             background: `linear-gradient(to right, ${theme.dot}, transparent)`,
+            boxShadow: `0 0 8px ${theme.dot}66`,
           }}
         />
 

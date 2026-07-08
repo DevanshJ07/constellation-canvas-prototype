@@ -16,6 +16,7 @@ import type {
   SuggestedNodeConnection,
   TensionLevel,
 } from "@/lib/worldBrain/constellationReasonerTypes";
+import { guardNodeDescription } from "@/lib/worldBrain/reasoningQualityGuard";
 
 const REASONER_MODEL = "gemini-2.5-flash";
 
@@ -139,6 +140,29 @@ export function normalizeConstellationReasonerOutput(
   };
 }
 
+function applyQualityGuardToOutput(
+  output: ConstellationReasonerOutput,
+  input: ConstellationReasonerInput,
+): ConstellationReasonerOutput {
+  const constellationTitle =
+    input.selectedConstellation.displayTitle ?? input.selectedConstellation.title;
+
+  return {
+    ...output,
+    startingNodes: output.startingNodes.map((node) => ({
+      ...node,
+      description: guardNodeDescription(node.description, {
+        title: node.title,
+        worldPrompt: input.worldPrompt,
+        constellationTitle,
+        creativePurpose: node.creativePurpose,
+        discoveryQuestion: node.discoveryQuestion,
+        nodeType: node.nodeType,
+      }),
+    })),
+  };
+}
+
 async function reasonConstellationWithGemini(
   input: ConstellationReasonerInput,
   apiKey: string,
@@ -190,7 +214,7 @@ async function reasonConstellationWithGemini(
     throw new Error("Invalid ConstellationReasonerOutput shape from Gemini response");
   }
 
-  return normalized;
+  return applyQualityGuardToOutput(normalized, input);
 }
 
 /** Calls Gemini to reason locally inside one constellation. */

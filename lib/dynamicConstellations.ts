@@ -361,10 +361,10 @@ function normalizeConstellation(
     id,
     title,
     agentName,
-    description: description || `A specialist agent focused on the ${title.toLowerCase()} dimension of this world.`,
+    description: description || `A living thread focused on ${title.toLowerCase()} inside this world.`,
     purpose: purpose || `Exploring ${title.toLowerCase()} as a creative lens.`,
     whyThisAgentMatters: String(c["whyThisAgentMatters"] ?? c["why"] ?? "").trim() ||
-      `This lens reveals dimensions of the world that other agents cannot access.`,
+      `This lens reveals story pressures other paths cannot access.`,
     focusQuestions,
     colorTheme,
     symbol,

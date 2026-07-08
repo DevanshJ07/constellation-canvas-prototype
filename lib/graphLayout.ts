@@ -1,3 +1,8 @@
+import {
+  computeConstellationGalaxyLayout,
+  layoutSatellitesAroundParent,
+} from "@/lib/orbitalLayout";
+
 /** Dynamic vertical spacing for future branch nodes. */
 export function computeBranchSpacing(count: number, baseGap = 72): number {
   if (count <= 1) return 0;
@@ -13,8 +18,6 @@ export function computeFutureYPositions(count: number, baseGap = 72): number[] {
   const spacing = computeBranchSpacing(count, baseGap);
   return Array.from({ length: count }, (_, j) => (j - (count - 1) / 2) * spacing);
 }
-
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
 /** Tighter orbit defaults for node expansion (vs constellation-level layout). */
 export const NODE_EXPANSION_BASE_RADIUS = 150;
@@ -50,8 +53,6 @@ export function computeOrbitalPositions(
   count: number,
   options: OrbitalLayoutOptions = {},
 ): { x: number; y: number }[] {
-  if (count <= 0) return [];
-
   const {
     centerX = -110,
     centerY = 0,
@@ -60,19 +61,12 @@ export function computeOrbitalPositions(
     phaseSeed = "",
   } = options;
 
-  const phase = phaseSeed ? stablePhaseOffset(phaseSeed) : 0;
-  const scaledBase =
-    count === 1 ? baseRadius * 0.75 : count <= 3 ? baseRadius * 0.88 : baseRadius;
-  const scaledStep =
-    count <= 2 ? radiusStep * 0.65 : count <= 4 ? radiusStep * 0.82 : radiusStep;
-
-  return Array.from({ length: count }, (_, index) => {
-    const angle = phase + index * GOLDEN_ANGLE;
-    const radius = scaledBase + index * scaledStep;
-    return {
-      x: centerX + Math.cos(angle) * radius,
-      y: centerY + Math.sin(angle) * radius,
-    };
+  return computeConstellationGalaxyLayout(count, {
+    center: { x: centerX, y: centerY },
+    baseRadius,
+    radiusStep,
+    phaseSeed,
+    depthLevel: 1,
   });
 }
 
@@ -197,60 +191,17 @@ export function layoutChildNodesAroundParent(
     parentNodeId = "",
     depthLevel = 2,
     existingPositions = {},
-    baseRadius = NODE_EXPANSION_BASE_RADIUS,
-    radiusStep = NODE_EXPANSION_RADIUS_STEP,
-    angleOffset,
     minRadiusFromParent = NODE_EXPANSION_MIN_PARENT_DISTANCE,
   } = params;
 
-  if (childNodes.length === 0) {
-    return { positions: {} };
-  }
-
-  const { radiusBoost, stepBoost } = depthLayoutScale(depthLevel);
-  const effectiveBase = baseRadius + radiusBoost;
-  const effectiveStep = radiusStep + stepBoost;
-  const phase =
-    angleOffset ?? (parentNodeId ? stablePhaseOffset(parentNodeId) : 0);
-
-  const positions: Record<string, { x: number; y: number }> = {};
-  const placed: { x: number; y: number }[] = Object.values(existingPositions);
-
-  childNodes.forEach((child, index) => {
-    const angle = phase + index * GOLDEN_ANGLE;
-    let radius = effectiveBase + index * effectiveStep;
-
-    // Single child: slight up-right bias for readability
-    const finalAngle = childNodes.length === 1 ? phase - Math.PI / 6 : angle;
-
-    let x = parentPosition.x + Math.cos(finalAngle) * radius;
-    let y = parentPosition.y + Math.sin(finalAngle) * radius;
-    let point = { x, y };
-
-    // Enforce minimum distance from parent
-    if (distanceBetween(point, parentPosition) < minRadiusFromParent) {
-      point = scaleFromCenter(parentPosition, point, minRadiusFromParent);
-    }
-
-    // Nudge outward if too close to existing nodes (simple deterministic bump)
-    let guard = 0;
-    while (guard < 12) {
-      const tooCloseToExisting = placed.some(
-        (p) => distanceBetween(point, p) < NODE_EXPANSION_MIN_SIBLING_DISTANCE,
-      );
-      if (!tooCloseToExisting) break;
-      radius += effectiveStep * 0.5;
-      x = parentPosition.x + Math.cos(finalAngle) * radius;
-      y = parentPosition.y + Math.sin(finalAngle) * radius;
-      point = { x, y };
-      if (distanceBetween(point, parentPosition) < minRadiusFromParent) {
-        point = scaleFromCenter(parentPosition, point, minRadiusFromParent);
-      }
-      guard++;
-    }
-
-    positions[child.id] = point;
-    placed.push(point);
+  const positions = layoutSatellitesAroundParent({
+    parentPosition,
+    childIds: childNodes.map((child) => child.id),
+    parentNodeId,
+    depthLevel,
+    existingPositions,
+    minParentDistance: minRadiusFromParent,
+    minSiblingDistance: NODE_EXPANSION_MIN_SIBLING_DISTANCE,
   });
 
   return { positions };

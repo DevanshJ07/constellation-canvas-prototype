@@ -36,9 +36,9 @@ export default function WorldWhisper({
         bottom: "20px",
       }}
     >
-      <div className="pointer-events-auto flex w-full max-w-2xl items-center gap-2 rounded-xl border border-violet-800/35 bg-slate-950/88 px-3 py-2 shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(167,139,250,0.06)] backdrop-blur-md">
-        <span className="hidden shrink-0 text-[10px] font-semibold uppercase tracking-[0.2em] text-violet-400/70 sm:inline">
-          Whisper
+      <div className="pointer-events-auto flex w-full max-w-2xl items-center gap-3 rounded-xl border border-violet-500/50 bg-slate-950/95 px-4 py-2.5 shadow-[0_8px_40px_rgba(0,0,0,0.55),0_0_32px_rgba(139,92,246,0.18),inset_0_0_0_1px_rgba(167,139,250,0.12)] backdrop-blur-md">
+        <span className="hidden shrink-0 text-[10px] font-semibold uppercase tracking-[0.22em] text-violet-300/90 sm:inline">
+          Steer
         </span>
         <input
           ref={inputRef}
@@ -46,15 +46,16 @@ export default function WorldWhisper({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Tell the world something..."
-          className="min-h-[36px] flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
+          placeholder="Steer the world…"
+          aria-label="Steer the world"
+          className="min-h-[38px] flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-400/80"
         />
         <button
           type="button"
           onClick={handleSubmit}
           disabled={!value.trim()}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-violet-600/40 bg-violet-950/50 text-violet-200 transition hover:border-violet-500/55 hover:bg-violet-950/70 disabled:cursor-default disabled:opacity-30"
-          aria-label="Submit truth"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-violet-500/55 bg-violet-950/60 text-violet-100 shadow-[0_0_16px_rgba(139,92,246,0.25)] transition hover:border-violet-400/70 hover:bg-violet-950/80 disabled:cursor-default disabled:opacity-30 disabled:shadow-none"
+          aria-label="Submit steering direction"
         >
           <span className="text-sm leading-none">↵</span>
         </button>

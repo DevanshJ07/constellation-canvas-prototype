@@ -4,6 +4,7 @@
 
 import { toNodeReasonerNodeType } from "@/lib/worldBrain/buildNodeReasonerInput";
 import { buildNodeReasonerPrompt } from "@/lib/worldBrain/nodeReasonerPrompt";
+import { guardNodeDescription } from "@/lib/worldBrain/reasoningQualityGuard";
 import {
   NODE_REASONER_BRANCH_TYPES,
   NODE_REASONER_CONTINUATION_DISTANCES,
@@ -331,6 +332,26 @@ export function normalizeNodeReasonerOutput(
   };
 }
 
+function applyQualityGuardToNodeOutput(
+  output: NodeReasonerOutput,
+  input: NodeReasonerInput,
+): NodeReasonerOutput {
+  return {
+    ...output,
+    possibleNewNodes: output.possibleNewNodes.map((node) => ({
+      ...node,
+      description: guardNodeDescription(node.description, {
+        title: node.title,
+        worldPrompt: input.worldPrompt,
+        constellationTitle: input.selectedConstellation.displayTitle,
+        creativePurpose: node.whyThisFollows,
+        discoveryQuestion: node.discoveryQuestion,
+        nodeType: node.nodeType,
+      }),
+    })),
+  };
+}
+
 async function reasonNodeWithLLM(input: NodeReasonerInput): Promise<NodeReasonerOutput> {
   const prompt = buildNodeReasonerPrompt(input);
 
@@ -358,7 +379,7 @@ async function reasonNodeWithLLM(input: NodeReasonerInput): Promise<NodeReasoner
     );
   }
 
-  return normalized;
+  return applyQualityGuardToNodeOutput(normalized, input);
 }
 
 /** Calls the configured LLM to reason deeper inside one selected node. */

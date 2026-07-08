@@ -12,6 +12,7 @@ import type {
 } from "@/lib/worldBrain/worldEvolutionPreviewModel";
 import { buildDryRunPreviewGroups } from "@/lib/worldBrain/worldEvolutionPreviewModel";
 import type { WorldEvolutionApplyDryRunResult } from "@/lib/worldBrain/worldEvolutionApplyDryRun";
+import { getEvolutionPreviewUserLabel } from "@/lib/rippleUserFlow";
 
 export type WorldEvolutionConfirmApplyArgs = {
   selectedPatchIds: string[];
@@ -43,33 +44,46 @@ function getApplyButtonState(
   dryRunGroups: ReturnType<typeof buildDryRunPreviewGroups>,
 ): ApplyButtonState {
   if (!applyDryRun || !dryRunGroups) {
-    return { disabled: true, label: "No dry run available" };
+    return { disabled: true, label: "Not ready to apply yet" };
   }
 
   if (applyDryRun.status === "failed") {
-    return { disabled: true, label: "Dry run failed" };
+    return { disabled: true, label: "More review needed" };
   }
 
   if (applyDryRun.status === "blocked") {
-    return { disabled: true, label: "Dry run blocked" };
+    return { disabled: true, label: "Changes blocked for now" };
   }
 
   if (applyDryRun.status === "empty") {
-    return { disabled: true, label: "No patches to apply" };
+    return { disabled: true, label: "No changes to apply" };
   }
 
   const hasReady = dryRunGroups.readyPatches.length > 0;
   const hasNeedsReview = dryRunGroups.needsReviewPatches.length > 0;
 
   if (!hasReady && !hasNeedsReview) {
-    return { disabled: true, label: "No eligible patches" };
+    return { disabled: true, label: "No eligible changes" };
   }
 
   if (!hasReady && hasNeedsReview) {
-    return { disabled: false, label: "Review apply (needs review)" };
+    return { disabled: false, label: "Review and apply" };
   }
 
-  return { disabled: false, label: "Review apply" };
+  return { disabled: false, label: "Review and apply" };
+}
+
+function getUserFacingEvolutionMessage(preview: WorldEvolutionPreviewModel): string {
+  if (preview.isFailed) {
+    return "More review is needed before applying world changes.";
+  }
+  if (preview.isBlocked) {
+    return "Some changes are blocked to protect canon.";
+  }
+  if (preview.isEmpty) {
+    return "No evolution actions were planned from the current approved changes.";
+  }
+  return preview.summary;
 }
 
 const STATUS_STYLES: Record<
@@ -696,6 +710,10 @@ export default function WorldEvolutionPreviewPanel({
   undoError = null,
 }: WorldEvolutionPreviewPanelProps) {
   const [confirmModalOpen, setConfirmModalOpen] = useState(false);
+  const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
+
+  const isDevMode = process.env.NODE_ENV === "development";
+  const showDetails = showTechnicalDetails || isDevMode;
 
   const dryRunGroups = useMemo(
     () => buildDryRunPreviewGroups(applyDryRun, dryRunTitleLookup),
@@ -707,7 +725,9 @@ export default function WorldEvolutionPreviewPanel({
   const statusKey =
     preview.status === "no_plan" ? "empty" : preview.status;
   const statusStyle = STATUS_STYLES[statusKey];
+  const userStatusLabel = getEvolutionPreviewUserLabel(preview.status);
   const { confidenceSummary, propagationSummary } = preview;
+  const userMessage = getUserFacingEvolutionMessage(preview);
 
   return (
     <aside className="flex max-h-[min(60vh,calc(100vh-180px))] w-full max-w-md flex-col overflow-hidden rounded-lg border border-cyan-900/30 bg-slate-950/95 shadow-xl">
@@ -721,11 +741,13 @@ export default function WorldEvolutionPreviewPanel({
             <span
               className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${statusStyle.badge}`}
             >
-              {preview.displayStatus || statusStyle.label}
+              {userStatusLabel}
             </span>
-            <span className="text-[10px] text-slate-500">
-              Budget remaining: {preview.nodeBudgetRemaining}
-            </span>
+            {showDetails && (
+              <span className="text-[10px] text-slate-500">
+                Budget remaining: {preview.nodeBudgetRemaining}
+              </span>
+            )}
           </div>
         </div>
         {onClose && (
@@ -742,61 +764,78 @@ export default function WorldEvolutionPreviewPanel({
 
       <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3">
         <section>
-          <p className="text-sm leading-relaxed text-slate-300">{preview.summary}</p>
-        </section>
-
-        {(preview.isEmpty || preview.isFailed || preview.isBlocked) && (
-          <section className="rounded-md border border-slate-800/60 bg-slate-900/35 px-3 py-2.5 text-xs text-slate-400">
-            {preview.isEmpty && "No evolution actions were planned from the current approved ripple operations."}
-            {preview.isFailed &&
-              "Evolution planning failed because the ripple apply plan is not ready to apply."}
-            {preview.isBlocked &&
-              !preview.isFailed &&
-              !preview.isEmpty &&
-              "Evolution is blocked until blockers are resolved or operations are revised."}
-          </section>
-        )}
-
-        <section className="rounded-md border border-slate-800/60 bg-slate-900/35 px-3 py-2">
-          <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-slate-500">
-            Confidence summary
-          </p>
-          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-400">
-            <span>Ready avg: {Math.round(confidenceSummary.averageReadyConfidence * 100)}%</span>
-            <span>Low: {Math.round(confidenceSummary.lowestConfidence * 100)}%</span>
-            <span>High: {Math.round(confidenceSummary.highestConfidence * 100)}%</span>
-            <span>{confidenceSummary.readyCount} ready</span>
-            <span>{confidenceSummary.downgradedCount} downgraded</span>
-            <span>{confidenceSummary.skippedCount} skipped</span>
-          </div>
-        </section>
-
-        {propagationSummary.scopes.length > 0 && (
-          <section className="rounded-md border border-slate-800/60 bg-slate-900/35 px-3 py-2">
-            <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-slate-500">
-              Propagation summary
+          <p className="text-sm leading-relaxed text-slate-300">{userMessage}</p>
+          {(preview.isFailed || preview.isBlocked) && !showDetails && (
+            <p className="mt-2 text-xs text-slate-500">
+              Open details to inspect technical blockers.
             </p>
-            <div className="text-[10px] text-slate-400">
-              Scopes: {propagationSummary.scopes.join(", ")} · Max hops:{" "}
-              {propagationSummary.maxHops}
-              {propagationSummary.cappedCount > 0
-                ? ` · ${propagationSummary.cappedCount} capped`
-                : ""}
-            </div>
-          </section>
+          )}
+        </section>
+
+        {!isDevMode && (preview.isFailed || preview.isBlocked || preview.blockers.length > 0) && (
+          <button
+            type="button"
+            onClick={() => setShowTechnicalDetails((value) => !value)}
+            className="text-[10px] text-cyan-400/70 transition hover:text-cyan-300"
+          >
+            {showTechnicalDetails ? "Hide technical details" : "Show technical details"}
+          </button>
         )}
 
-        <ActionSection title="Ready actions" actions={preview.readyActions} />
-        <ActionSection title="Needs review" actions={preview.needsReviewActions} />
-        <ActionSection title="Blocked actions" actions={preview.blockedActions} />
-        <ActionSection title="Skipped actions" actions={preview.skippedActions} />
-        <ActionSection title="Downgraded actions" actions={preview.downgradedActions} />
+        {showDetails && (
+          <>
+            {(preview.isEmpty || preview.isFailed || preview.isBlocked) && (
+              <section className="rounded-md border border-slate-800/60 bg-slate-900/35 px-3 py-2.5 text-xs text-slate-500">
+                {preview.summary}
+              </section>
+            )}
 
-        <BlockerList blockers={preview.blockers} />
-        <WarningList warnings={preview.warnings} />
+            <section className="rounded-md border border-slate-800/60 bg-slate-900/35 px-3 py-2">
+              <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+                Confidence summary
+              </p>
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-400">
+                <span>Ready avg: {Math.round(confidenceSummary.averageReadyConfidence * 100)}%</span>
+                <span>Low: {Math.round(confidenceSummary.lowestConfidence * 100)}%</span>
+                <span>High: {Math.round(confidenceSummary.highestConfidence * 100)}%</span>
+                <span>{confidenceSummary.readyCount} ready</span>
+                <span>{confidenceSummary.downgradedCount} downgraded</span>
+                <span>{confidenceSummary.skippedCount} skipped</span>
+              </div>
+            </section>
 
-        {applyDryRun && (
-          <DryRunPatchPreview applyDryRun={applyDryRun} titleLookup={dryRunTitleLookup} />
+            {propagationSummary.scopes.length > 0 && (
+              <section className="rounded-md border border-slate-800/60 bg-slate-900/35 px-3 py-2">
+                <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+                  Propagation summary
+                </p>
+                <div className="text-[10px] text-slate-400">
+                  Scopes: {propagationSummary.scopes.join(", ")} · Max hops:{" "}
+                  {propagationSummary.maxHops}
+                  {propagationSummary.cappedCount > 0
+                    ? ` · ${propagationSummary.cappedCount} capped`
+                    : ""}
+                </div>
+              </section>
+            )}
+
+            <ActionSection title="Ready actions" actions={preview.readyActions} />
+            <ActionSection title="Needs review" actions={preview.needsReviewActions} />
+            <ActionSection title="Blocked actions" actions={preview.blockedActions} />
+            <ActionSection title="Skipped actions" actions={preview.skippedActions} />
+            <ActionSection title="Downgraded actions" actions={preview.downgradedActions} />
+
+            <BlockerList blockers={preview.blockers} />
+            <WarningList warnings={preview.warnings} />
+
+            {applyDryRun && (
+              <DryRunPatchPreview applyDryRun={applyDryRun} titleLookup={dryRunTitleLookup} />
+            )}
+          </>
+        )}
+
+        {!showDetails && preview.readyActions.length > 0 && (
+          <ActionSection title="Suggested world changes" actions={preview.readyActions.slice(0, 4)} />
         )}
 
         <section className="rounded-md border border-slate-800/50 bg-slate-900/25 px-3 py-2.5">

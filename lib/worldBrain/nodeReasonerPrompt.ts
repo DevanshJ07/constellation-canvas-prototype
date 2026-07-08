@@ -327,6 +327,29 @@ Reject or avoid continuations that:
 Prefer continuityScore 7 or above for every possibleNewNode.
 Avoid high novelty with low continuity.`;
 
+const NODE_DESCRIPTION_DEPTH_RULES = `═══ NODE DESCRIPTION DEPTH (required for every possibleNewNode) ═══
+Each possibleNewNode description must deepen the SELECTED node with a specific creative idea.
+
+Required fields:
+- description: concrete idea continuing the selected node (not a category)
+- whyThisFollows: explicit continuity from the selected node
+- discoveryQuestion: what the creator should explore next
+
+FORBIDDEN:
+- "entry point into", "explore the concept", prompt restatement
+- generic beats ("The Hero", "The Villain", "The Conflict")
+- ideas that could exist without the selected node
+
+Examples (pattern only):
+Selected: Childhood Memory Bank (memory economy)
+GOOD: "A Loan Paid in Birthdays — parents mortgage their child's tenth birthday to pay rent, leaving a gap in her timeline she can feel but not name."
+
+Selected: The Train Station Dream (romance/disaster)
+GOOD: "The Ticket Dated Tomorrow — both lovers find the same impossible ticket in their pockets after waking, but only one remembers buying it."
+
+Selected: Map-Eating Crabs (comedy treasure hunt)
+GOOD: "The Half-Digested Map Corner — the crew realizes the crabs prefer fake X marks, meaning every decoy on the island was drawn by someone who wanted them lost."`;
+
 const DISPLAY_TITLE_RULES = `═══ displayTitle RULES ═══
 - title = richer internal discovery name (can be longer and more evocative).
 - displayTitle = short canvas-facing label shown on the visual node.
@@ -570,6 +593,8 @@ export function buildNodeReasonerPrompt(input: NodeReasonerInput): string {
     SCOPE_AWARE_EXPANSION,
     "",
     ANTI_DRIFT_RULES,
+    "",
+    NODE_DESCRIPTION_DEPTH_RULES,
     "",
     DISPLAY_TITLE_RULES,
     "",

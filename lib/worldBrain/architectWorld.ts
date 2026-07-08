@@ -4,6 +4,10 @@
  */
 
 import type { WorldPromptDecomposition } from "@/lib/worldBrain/decomposeWorldPrompt";
+import {
+  guardNodeDescription,
+  isShallowNodeDescription,
+} from "@/lib/worldBrain/reasoningQualityGuard";
 
 export type NodeType =
   | "character"
@@ -1318,7 +1322,12 @@ function distributeStartingNodes(
       const nodeId = toStableId("node", title, seenIds);
       const stubNode: StartingNode = {
         title,
-        description: `A vivid entry point into ${c.title}`,
+        description: guardNodeDescription("", {
+          title,
+          worldPrompt: prompt,
+          constellationTitle: c.title,
+          premise: ctx.premise,
+        }),
         belongsToConstellationId: c.id,
         generatedByAgentId: "",
         whyPromising: "",
@@ -1332,7 +1341,12 @@ function distributeStartingNodes(
       const newNode: StartingNode = {
         id: nodeId,
         title,
-        description: `A vivid entry point into ${c.title} — grounded in ${ctx.premise}.`,
+        description: guardNodeDescription("", {
+          title,
+          worldPrompt: prompt,
+          constellationTitle: c.title,
+          premise: ctx.premise,
+        }),
         belongsToConstellationId: c.id,
         generatedByAgentId: agentId,
         whyPromising: "",
@@ -1740,8 +1754,18 @@ function repairNodeFields(
     node.title = templates[idx] ?? node.title;
   }
 
-  if (!node.description || node.description.length < 20) {
-    node.description = `In ${constellation.title}, "${node.title}" opens a concrete scene the creator can enter immediately — grounded in ${ctx.premise}.`;
+  if (
+    !node.description ||
+    node.description.length < 20 ||
+    isShallowNodeDescription(node.description, { title: node.title, worldPrompt: prompt })
+  ) {
+    node.description = guardNodeDescription(node.description || "", {
+      title: node.title,
+      worldPrompt: prompt,
+      constellationTitle: constellation.title,
+      premise: ctx.premise,
+      whyItMatters: node.whyPromising,
+    });
   }
 
   if (isGenericWhyPromising(node.whyPromising, ctx)) {
@@ -2684,8 +2708,8 @@ function buildArchitectureFallback(
     visibleConstellations.push({
       id,
       title,
-      purpose: layer?.purpose ?? `Explore the ${title.toLowerCase()} dimension of this world`,
-      userFacingQuestion: layer?.shouldExplore[0] ?? `What lives inside ${title}?`,
+      purpose: layer?.purpose ?? `What story pressures gather around ${title}?`,
+      userFacingQuestion: layer?.shouldExplore[0] ?? `What conflict does ${title} force into the open?`,
       sourceCreativeLayer: layer?.name ?? title,
       linkedReasoningAgentIds: [agentId],
       suggestedStartingNodeIds: [],
@@ -2717,7 +2741,13 @@ function buildArchitectureFallback(
     const newNode: StartingNode = {
       id: nodeId,
       title,
-      description: dir?.description ?? `A concrete entry point into ${constellation.title}`,
+      description: guardNodeDescription(dir?.description ?? "", {
+        title,
+        worldPrompt: prompt,
+        constellationTitle: constellation.title,
+        premise: ctx.premise,
+        whyItMatters: dir?.whyPromising,
+      }),
       belongsToConstellationId: constellation.id,
       generatedByAgentId: agentId,
       whyPromising: dir?.whyPromising ?? "",

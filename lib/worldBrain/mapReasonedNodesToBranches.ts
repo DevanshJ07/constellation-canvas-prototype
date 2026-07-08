@@ -2,6 +2,7 @@
  * Maps Constellation Reasoner output → existing canvas branch / panel shapes.
  */
 
+import { guardNodeDescription } from "@/lib/worldBrain/reasoningQualityGuard";
 import type { AiGeneratedBranch } from "@/lib/agentExplore";
 import type { AiDiscovery } from "@/types/discovery";
 import type {
@@ -72,8 +73,16 @@ export function mapConstellationReasonerOutputToBranches(
   const panelMeta: Record<string, ReasonedNodePanelMeta> = {};
 
   for (const node of output.startingNodes) {
+    const description = guardNodeDescription(node.description, {
+      title: node.title,
+      constellationTitle: constellation?.displayTitle ?? constellation?.title,
+      creativePurpose: node.creativePurpose,
+      discoveryQuestion: node.discoveryQuestion,
+      nodeType: node.nodeType,
+    });
+    const guardedNode = { ...node, description };
     branches.push(
-      mapReasonedStartingNodeToAiBranch(node, constellationId, agentName),
+      mapReasonedStartingNodeToAiBranch(guardedNode, constellationId, agentName),
     );
     nodeConstellationMap[node.id] = constellationId;
     panelMeta[node.id] = {

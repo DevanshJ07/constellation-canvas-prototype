@@ -324,7 +324,7 @@ export default function DynamicWorldOverview({
         </div>
 
         <p className="mt-8 text-center text-[10px] text-slate-700">
-          Select a constellation to begin exploring this dimension of your world.
+          Select a constellation to begin exploring this thread of your world.
         </p>
 
         {debugPreview && (

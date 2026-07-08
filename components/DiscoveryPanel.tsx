@@ -6,6 +6,15 @@ import type {
   DiscoveryDecision,
   PanelItem,
 } from "@/types/discovery";
+import { simplifyDisplayLabel } from "@/lib/simplifyDisplayLabel";
+import {
+  toStoryHookTitle,
+  enrichPanelDescription,
+  enrichWhyItMatters,
+  formatCreatorCategory,
+  sanitizeCreatorCopy,
+} from "@/lib/creatorCopy";
+import { buildSteeringChips } from "@/lib/steeringChips";
 import type { AgentVoice } from "@/lib/agentVoices";
 import type { AgentReasoning } from "@/lib/agentReasoning";
 import type { AgentSelectInput } from "@/lib/agentSelect";
@@ -26,10 +35,10 @@ export type JourneyStep = {
   role?: "origin" | "step" | "current";
 };
 
-const STEER_EXAMPLES = [
-  "More psychological than supernatural",
-  "The caretaker is blind",
-  "This happens underwater",
+const FALLBACK_STEER_EXAMPLES = [
+  "Raise the emotional cost before the plot cost",
+  "Make the safest choice feel like betrayal",
+  "Give this path one secret the world is hiding",
 ];
 
 type DiscoveryPanelProps = {
@@ -59,6 +68,8 @@ type DiscoveryPanelProps = {
   nodeReasonerLoading?: boolean;
   nodeReasonerError?: string | null;
   hasNodeReasonerCache?: boolean;
+  panelWidth?: number;
+  worldSeed?: string;
 };
 
 export default function DiscoveryPanel({
@@ -85,33 +96,64 @@ export default function DiscoveryPanel({
   nodeReasonerLoading = false,
   nodeReasonerError = null,
   hasNodeReasonerCache = false,
+  panelWidth,
+  worldSeed = "",
 }: DiscoveryPanelProps) {
   const [draftDirection, setDraftDirection] = useState("");
   const [localLoading, setLocalLoading] = useState(false);
 
-  const title =
+  const isAiNode = item.kind === "ai-discovery";
+  const rawTitle =
     item.kind === "discovery" || item.kind === "ai-discovery"
       ? item.discovery.title
       : item.consequence.title;
+  const title = toStoryHookTitle(rawTitle, {
+    title: rawTitle,
+    worldSeed,
+    category:
+      item.kind === "discovery" || item.kind === "ai-discovery"
+        ? item.discovery.category
+        : item.consequence.category,
+  });
   const category =
     item.kind === "discovery" || item.kind === "ai-discovery"
-      ? item.discovery.category
-      : item.consequence.category;
-  const description =
+      ? formatCreatorCategory(item.discovery.category)
+      : formatCreatorCategory(item.consequence.category);
+  const rawDescription =
     item.kind === "discovery" || item.kind === "ai-discovery"
       ? item.discovery.description
       : item.consequence.description;
-  const whyItMatters =
+  const panelCtx = {
+    title,
+    worldSeed,
+    category: category ?? undefined,
+    whyItMatters:
+      item.kind === "discovery" || item.kind === "ai-discovery"
+        ? item.discovery.whyItMatters
+        : item.consequence.whyItMatters,
+    discoveryQuestion: isAiNode ? item.discovery.explorationQuestions?.[0] : undefined,
+    rippleHint: isAiNode ? item.discovery.rippleHint : undefined,
+  };
+  const description = enrichPanelDescription(rawDescription, panelCtx);
+  const whyItMatters = enrichWhyItMatters(
     item.kind === "discovery" || item.kind === "ai-discovery"
       ? item.discovery.whyItMatters
-      : (item.consequence.whyItMatters ?? null);
-  const isAiNode = item.kind === "ai-discovery";
-  const sourceAgent = isAiNode ? item.discovery.sourceAgent : null;
-  const rippleHint = isAiNode ? item.discovery.rippleHint : null;
-  const whyPromising = isAiNode ? item.discovery.whyPromising : null;
+      : (item.consequence.whyItMatters ?? null),
+    panelCtx,
+  );
+  const sourceAgent = isAiNode ? sanitizeCreatorCopy(item.discovery.sourceAgent ?? "") : null;
+  const rippleHint = isAiNode ? sanitizeCreatorCopy(item.discovery.rippleHint ?? "") : null;
+  const whyPromising = isAiNode ? enrichWhyItMatters(item.discovery.whyPromising, panelCtx) : null;
   const risk = isAiNode ? item.discovery.risk : null;
   const explorationQuestions = isAiNode ? item.discovery.explorationQuestions : null;
   const nodeType = isAiNode ? item.discovery.nodeType : null;
+
+  const steerChips = buildSteeringChips({
+    worldSeed,
+    nodeTitle: title,
+    nodeDescription: description,
+    category: category ?? undefined,
+  });
 
   const isAccepted = decision === "accepted";
   const isRejected = decision === "rejected";
@@ -132,7 +174,14 @@ export default function DiscoveryPanel({
   const isGenerating = localLoading || exploreLoading;
 
   return (
-    <aside className="absolute right-0 top-0 z-10 flex h-full w-80 flex-col border-l border-slate-800/80 bg-slate-950/92 backdrop-blur-md">
+    <aside
+      className="absolute right-0 top-0 z-10 flex h-full flex-col border-l border-slate-800/80 bg-slate-950/92 backdrop-blur-md"
+      style={{
+        width: panelWidth
+          ? `${panelWidth}px`
+          : "clamp(280px, calc((100vw - 176px) / 3.5), 480px)",
+      }}
+    >
       {/* Header */}
       <div className="shrink-0 border-b border-slate-800/80 px-5 py-4">
         <div className="flex items-start justify-between gap-4">
@@ -140,7 +189,7 @@ export default function DiscoveryPanel({
             <p className="text-xs uppercase tracking-wider text-violet-400/80">
               {isAiNode ? (
                 <span className="text-violet-300/90">
-                  ✦ agent-shaped · {nodeType ?? category}
+                  ✦ Emergent Discovery · {formatCreatorCategory(nodeType ?? category) ?? "Living Thread"}
                 </span>
               ) : (
                 category
@@ -168,81 +217,11 @@ export default function DiscoveryPanel({
 
       {/* Scrollable body */}
       <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
-        {/* Your Journey */}
-        {journeySteps.length > 0 && (
-          <section className="rounded-md border border-violet-800/40 bg-violet-950/20 px-3 py-2.5">
-            <h3 className="mb-2.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-violet-300/90">
-              Your Journey
-            </h3>
-            <div className="flex flex-col items-stretch gap-0">
-              {journeySteps.map((step, i) => {
-                const isCurrent = step.role === "current" || i === journeySteps.length - 1;
-                const isOrigin = step.role === "origin" || step.id === "__world-seed__";
-                return (
-                  <div key={step.id} className="flex flex-col">
-                    {i > 0 && (
-                      <div className="my-1.5 flex justify-center">
-                        <span className="select-none text-[10px] leading-none text-slate-600/80">
-                          ↓
-                        </span>
-                      </div>
-                    )}
-                    <div
-                      className={`rounded-md px-2 py-1.5 ${
-                        isCurrent
-                          ? "border border-violet-600/40 bg-violet-950/35"
-                          : isOrigin
-                            ? "border border-slate-700/50 bg-slate-900/30"
-                            : ""
-                      }`}
-                    >
-                      {isOrigin && (
-                        <p className="mb-0.5 text-[8px] uppercase tracking-[0.14em] text-slate-600">
-                          Origin
-                        </p>
-                      )}
-                      {isCurrent && !isOrigin && (
-                        <p className="mb-0.5 text-[8px] uppercase tracking-[0.14em] text-violet-500/70">
-                          Current
-                        </p>
-                      )}
-                      {isOrigin || isCurrent ? (
-                        <span
-                          className={`block text-left leading-snug ${
-                            isCurrent
-                              ? "text-xs font-medium text-violet-50"
-                              : "text-xs text-slate-300"
-                          }`}
-                        >
-                          {step.title}
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => onNavigateDirection(step.id)}
-                          className="block w-full text-left text-xs leading-snug text-slate-400 transition hover:text-slate-100"
-                        >
-                          {step.title}
-                        </button>
-                      )}
-                      {step.subtitle && isOrigin && (
-                        <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
-                          {step.subtitle}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
         <section>
           <h3 className="mb-2 text-xs uppercase tracking-wider text-slate-500">
             Description
           </h3>
-          <p className="text-sm leading-relaxed text-slate-300">{description}</p>
+          <p className="max-w-prose text-sm leading-[1.65] text-slate-300">{description}</p>
         </section>
 
         {(whyItMatters || whyPromising) && (
@@ -250,7 +229,7 @@ export default function DiscoveryPanel({
             <h3 className="mb-2 text-xs uppercase tracking-wider text-slate-500">
               Why it matters
             </h3>
-            <p className="text-sm leading-relaxed text-slate-400">
+            <p className="max-w-prose text-sm leading-[1.65] text-slate-400">
               {whyPromising ?? whyItMatters}
             </p>
           </section>
@@ -436,7 +415,7 @@ export default function DiscoveryPanel({
                     >
                       <div className="flex items-center justify-between gap-2">
                         <p className={`text-sm font-medium ${dirAccepted ? "text-emerald-200" : isAi ? "text-violet-200" : isConsequence ? "text-teal-200" : "text-slate-200"}`}>
-                          {dir.title}
+                          {simplifyDisplayLabel(dir.title)}
                         </p>
                         <span className="shrink-0 text-[10px] text-slate-600">
                           {dirAccepted ? "● canon" : isAi ? "✦ agent" : isConsequence ? "✦ emerged" : "→"}
@@ -485,7 +464,7 @@ export default function DiscoveryPanel({
           />
 
           <div className="mt-1.5 flex flex-wrap gap-1">
-            {STEER_EXAMPLES.map((ex) => (
+            {(steerChips.length > 0 ? steerChips : FALLBACK_STEER_EXAMPLES).map((ex) => (
               <button
                 key={ex}
                 type="button"
@@ -528,7 +507,7 @@ export default function DiscoveryPanel({
                   : "Explore Deeper"}
             </button>
             {nodeReasonerError && !nodeReasonerLoading && (
-              <p className="mt-1.5 text-[10px] leading-snug text-rose-400/80">
+              <p className="mt-1.5 text-[10px] leading-snug text-slate-400/90">
                 {nodeReasonerError}
               </p>
             )}
@@ -536,9 +515,9 @@ export default function DiscoveryPanel({
         )}
 
         {/* Decision actions */}
-        <div className="px-4 py-3">
+        <div className="px-5 py-4">
           {isAccepted ? (
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2.5">
               <div className="mb-1 flex items-center justify-center gap-2">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 <p className="text-sm font-medium text-emerald-300">Established Truth</p>
@@ -552,30 +531,21 @@ export default function DiscoveryPanel({
               </button>
             </div>
           ) : canDecide ? (
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2.5">
               <button
                 type="button"
                 onClick={() => onAction("accept")}
-                className="rounded-lg bg-emerald-700/90 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-600"
+                className="rounded-lg bg-emerald-700/90 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600"
               >
                 Establish as Truth
               </button>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => onAction("save")}
-                  className="flex-1 rounded-lg border border-sky-500/40 bg-sky-950/40 px-3 py-2 text-xs font-medium text-sky-200 transition hover:border-sky-400/60 hover:bg-sky-950/60"
-                >
-                  Keep as Potential
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onAction("reject")}
-                  className="flex-1 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 transition hover:border-slate-600 hover:text-slate-300"
-                >
-                  Reject
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => onAction("reject")}
+                className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-400 transition hover:border-slate-600 hover:text-slate-300"
+              >
+                Reject
+              </button>
             </div>
           ) : isRejected ? (
             <p className="text-center text-sm text-slate-500 line-through">Rejected</p>

@@ -121,6 +121,36 @@ GOOD node pattern (guidance only — invent world-specific nodes):
 - title: "The Festival Nobody Attends" → displayTitle: "Empty Festival"
 - title: "The Contract Written in Ash" → displayTitle: "Ash Contract"`;
 
+const DESCRIPTION_DEPTH_RULES = `═══ DESCRIPTION DEPTH (required for every startingNode) ═══
+Each description must be a SPECIFIC creative idea — not a category label or prompt restatement.
+
+Every startingNode MUST deliver:
+- description: one concrete worldbuilding idea (who/what/where + tension)
+- creativePurpose: why this creates conflict, choice, mystery, or consequence
+- discoveryQuestion: what this invites the creator to explore next
+
+FORBIDDEN in description:
+- "entry point into", "concrete entry point", "explore the concept"
+- "a specific idea about", repeating the user's world prompt verbatim
+- hollow labels like "premise", "exploration zone", "starting point"
+
+Genre examples (pattern only — invent world-specific content):
+
+Memory economy — BAD: "A concrete entry point into Tech Premise."
+GOOD: "The hacker realizes the stolen dataset predicts which citizens will betray friends under pressure, making the blackmail morally explosive rather than merely financial."
+
+Tech blackmail thriller — BAD: "An exploration of surveillance."
+GOOD: "The victim's smart home logs prove they were awake during the murder — but the logs were edited by someone who loves them."
+
+Locked-room mystery — BAD: "A specific idea about the crime scene."
+GOOD: "The murder weapon is a fountain pen that only writes when warmed by a living hand — so the killer had to stay in the room after the victim died."
+
+Sports drama — BAD: "An exploration of team conflict."
+GOOD: "The star keeper secretly trains with the rival club at dawn because only their coach understands his terror of penalty shots."
+
+Family inheritance — BAD: "A character connected to the estate."
+GOOD: "The eldest sister signed away her share years ago to pay for their mother's surgery — a fact no one at the will reading knows yet."`;
+
 const DISPLAY_TITLE_RULES = `═══ displayTitle RULES ═══
 - title = richer internal discovery name (can be longer and more evocative).
 - displayTitle = short canvas-facing label shown on the visual node.
@@ -310,6 +340,8 @@ export function buildConstellationReasonerPrompt(
     formatInputContext(input),
     "",
     NODE_QUALITY_RULES,
+    "",
+    DESCRIPTION_DEPTH_RULES,
     "",
     DISPLAY_TITLE_RULES,
     "",
