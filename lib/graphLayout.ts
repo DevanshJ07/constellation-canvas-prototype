@@ -54,7 +54,7 @@ export function computeOrbitalPositions(
   options: OrbitalLayoutOptions = {},
 ): { x: number; y: number }[] {
   const {
-    centerX = -110,
+    centerX = 0,
     centerY = 0,
     baseRadius = 210,
     radiusStep = 36,
@@ -70,8 +70,8 @@ export function computeOrbitalPositions(
   });
 }
 
-/** Default center for constellation-root exploration (biased left for right panel). */
-export const CONSTELLATION_ORBIT_CENTER = { x: -110, y: 0 } as const;
+/** Logical center for constellation-root exploration — viewport pan handles panel inset. */
+export const CONSTELLATION_ORBIT_CENTER = { x: 0, y: 0 } as const;
 
 export type LabelCollisionEntry = {
   id: string;
@@ -234,11 +234,22 @@ export type FitLayoutToBoundsOptions = {
 
 /** Default safe area for local constellation exploration (React Flow coords). */
 export const DISCOVERY_LAYOUT_BOUNDS: LayoutBounds = {
-  minX: -400,
-  maxX: 360,
-  minY: -240,
-  maxY: 200,
+  minX: -380,
+  maxX: 380,
+  minY: -260,
+  maxY: 260,
 };
+
+/** Bounds for fit scaling; panel inset shrinks usable width without shifting logical center. */
+export function computeDiscoveryLayoutBounds(panelInsetPx = 0): LayoutBounds {
+  if (panelInsetPx <= 0) return { ...DISCOVERY_LAYOUT_BOUNDS };
+  const shrink = Math.min(120, Math.round(panelInsetPx * 0.22));
+  return {
+    ...DISCOVERY_LAYOUT_BOUNDS,
+    maxX: DISCOVERY_LAYOUT_BOUNDS.maxX - shrink,
+    minX: DISCOVERY_LAYOUT_BOUNDS.minX + shrink * 0.35,
+  };
+}
 
 /**
  * Scales and recenters node positions to fit within bounds.
@@ -292,6 +303,66 @@ export function fitLayoutToBounds(
     result[id] = {
       x: targetCx + (p.x - cx) * effectiveScale,
       y: targetCy + (p.y - cy) * effectiveScale,
+    };
+  }
+  return result;
+}
+
+/**
+ * Scales nodes around a focus point kept at the bounds center.
+ * Prevents centroid recentering from drifting the parent star off-center.
+ */
+export function fitLayoutPreservingFocus(
+  positions: Record<string, { x: number; y: number }>,
+  focusId: string,
+  bounds: LayoutBounds,
+  options: FitLayoutToBoundsOptions = {},
+): Record<string, { x: number; y: number }> {
+  const ids = Object.keys(positions);
+  if (ids.length === 0) return { ...positions };
+
+  const padding = options.padding ?? 28;
+  const minScale = options.minScale ?? 0.38;
+  const maxScale = options.maxScale ?? 1;
+
+  const focus = positions[focusId] ?? { x: 0, y: 0 };
+  const normalized: Record<string, { x: number; y: number }> = {};
+  for (const id of ids) {
+    const p = positions[id]!;
+    normalized[id] = { x: p.x - focus.x, y: p.y - focus.y };
+  }
+
+  const availW = bounds.maxX - bounds.minX - padding * 2;
+  const availH = bounds.maxY - bounds.minY - padding * 2;
+  const halfW = availW / 2;
+  const halfH = availH / 2;
+
+  let maxAbsX = 0;
+  let maxAbsY = 0;
+  for (const id of ids) {
+    if (id === focusId) continue;
+    const p = normalized[id]!;
+    maxAbsX = Math.max(maxAbsX, Math.abs(p.x));
+    maxAbsY = Math.max(maxAbsY, Math.abs(p.y));
+  }
+
+  let scale = 1;
+  if (maxAbsX > halfW || maxAbsY > halfH) {
+    const scaleX = maxAbsX > 0 ? halfW / maxAbsX : 1;
+    const scaleY = maxAbsY > 0 ? halfH / maxAbsY : 1;
+    scale = Math.min(scaleX, scaleY, maxScale);
+  }
+  scale = Math.max(minScale, Math.min(maxScale, scale));
+
+  const targetCx = (bounds.minX + bounds.maxX) / 2;
+  const targetCy = (bounds.minY + bounds.maxY) / 2;
+
+  const result: Record<string, { x: number; y: number }> = {};
+  for (const id of ids) {
+    const p = normalized[id]!;
+    result[id] = {
+      x: targetCx + p.x * scale,
+      y: targetCy + p.y * scale,
     };
   }
   return result;

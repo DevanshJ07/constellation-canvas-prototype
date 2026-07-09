@@ -7,6 +7,8 @@ import { simplifyDisplayLabel } from "@/lib/simplifyDisplayLabel";
 import {
   guardNodeDescription,
   isShallowNodeDescription,
+  buildRichFallbackWhyItMatters,
+  buildRichFallbackDirections,
 } from "@/lib/worldBrain/reasoningQualityGuard";
 
 export type PanelCopyContext = {
@@ -88,7 +90,15 @@ function isGenericStoryTitle(title: string): boolean {
   return false;
 }
 
-function seedHints(seed: string): { hasCave: boolean; hasMemory: boolean; hasFriends: boolean; hasTemple: boolean; hasMemoryEconomy: boolean } {
+function seedHints(seed: string): {
+  hasCave: boolean;
+  hasMemory: boolean;
+  hasFriends: boolean;
+  hasTemple: boolean;
+  hasMemoryEconomy: boolean;
+  hasHorror: boolean;
+  hasFolklore: boolean;
+} {
   const s = seed.toLowerCase();
   return {
     hasCave: /\bcave|caves|underground\b/.test(s),
@@ -96,6 +106,8 @@ function seedHints(seed: string): { hasCave: boolean; hasMemory: boolean; hasFri
     hasFriends: /\bfriend|friends|group\b/.test(s),
     hasTemple: /\btemple|ritual|shrine|god\b/.test(s),
     hasMemoryEconomy: /\bmemory.*(econom|currency|trade|market)|econom.*memory\b/.test(s),
+    hasHorror: /\bhorror|dread|fear|nightmare|psychological\b/.test(s),
+    hasFolklore: /\bfolklore|myth|legend|spirit|ritual|indian\b/.test(s),
   };
 }
 
@@ -148,7 +160,8 @@ export function enrichPanelDescription(
       title: ctx.title,
       worldPrompt: ctx.worldSeed,
     }) ||
-    /explore the .* (dimension|thread) of this world/i.test(sanitized)
+    /explore the .* (dimension|thread) of this world/i.test(sanitized) ||
+    /\banchor all exploration\b/i.test(sanitized)
   ) {
     return guardNodeDescription(sanitized, {
       title: ctx.title,
@@ -157,6 +170,7 @@ export function enrichPanelDescription(
       creativePurpose: ctx.creativePurpose ?? ctx.whyItMatters,
       discoveryQuestion: ctx.discoveryQuestion,
       whyItMatters: ctx.whyItMatters,
+      nodeType: ctx.category,
     });
   }
   return sanitized;
@@ -166,26 +180,74 @@ export function enrichWhyItMatters(
   whyItMatters: string | null | undefined,
   ctx: PanelCopyContext,
 ): string | null {
+  const guardCtx = {
+    title: ctx.title,
+    worldPrompt: ctx.worldSeed,
+    constellationTitle: ctx.category,
+    discoveryQuestion: ctx.discoveryQuestion,
+    whyItMatters: ctx.whyItMatters,
+  };
+
   if (!whyItMatters?.trim()) {
-    if (ctx.discoveryQuestion) return sanitizeCreatorCopy(ctx.discoveryQuestion);
-    return null;
+    if (ctx.discoveryQuestion && !/^what makes .+ unique/i.test(ctx.discoveryQuestion)) {
+      return sanitizeCreatorCopy(ctx.discoveryQuestion);
+    }
+    return buildRichFallbackWhyItMatters(guardCtx);
   }
 
   const sanitized = sanitizeCreatorCopy(whyItMatters);
+  if (
+    isShallowNodeDescription(sanitized, { title: ctx.title, worldPrompt: ctx.worldSeed }) ||
+    /what makes .+ unique/i.test(sanitized) ||
+    /\banchor all exploration\b/i.test(sanitized)
+  ) {
+    return buildRichFallbackWhyItMatters(guardCtx);
+  }
+
   if (/what lives inside/i.test(sanitized)) {
-    const zone = ctx.category ?? ctx.title;
     const hints = seedHints(ctx.worldSeed ?? "");
     if (hints.hasCave && hints.hasFriends) {
       return "What mental pressure does the cave create, and which friend becomes the first unreliable witness?";
     }
-    return `What story pressure does ${zone} create — and who pays the cost first?`;
+    return `What story pressure does ${ctx.category ?? ctx.title} create — and who pays the cost first?`;
   }
 
   if (sanitized.length < 28 || /^what .* inside/i.test(sanitized)) {
-    return `Why ${ctx.title} matters: it forces a choice before the world can stay comfortable.`;
+    return buildRichFallbackWhyItMatters(guardCtx);
   }
 
   return sanitized;
+}
+
+export function enrichExplorationQuestions(
+  questions: string[] | null | undefined,
+  ctx: PanelCopyContext,
+): string[] {
+  if (!questions?.length) {
+    return buildRichFallbackDirections({
+      title: ctx.title,
+      worldPrompt: ctx.worldSeed,
+      constellationTitle: ctx.category,
+    });
+  }
+
+  const filtered = questions
+    .map((q) => sanitizeCreatorCopy(q))
+    .filter(
+      (q) =>
+        q.length >= 12 &&
+        !/^what makes .+ unique/i.test(q) &&
+        !/\banchor all exploration\b/i.test(q) &&
+        !isShallowNodeDescription(q, { title: ctx.title, worldPrompt: ctx.worldSeed }),
+    );
+
+  if (filtered.length >= 2) return filtered.slice(0, 4);
+
+  return buildRichFallbackDirections({
+    title: ctx.title,
+    worldPrompt: ctx.worldSeed,
+    constellationTitle: ctx.category,
+  });
 }
 
 export function toCreatorNodeLabel(title: string, ctx?: PanelCopyContext): string {

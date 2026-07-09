@@ -2,24 +2,36 @@ import type { Edge, Node } from "@xyflow/react";
 import type { Discovery } from "@/types/discovery";
 import type { ConstellationRegionId } from "@/lib/regions";
 import {
-  CONSTELLATION_REGIONS,
   DISCOVERY_REGION_MAP,
-  getRegionById,
   getRegionTheme,
   REGION_THEMES,
 } from "@/lib/regions";
 import { WORLD_RELATIONSHIPS } from "@/lib/worldLogic";
 import type { CanvasWorldModel } from "@/lib/worldBrain/mapArchitectureToCanvas";
 import { normalizeCanvasDisplayTitle } from "@/lib/normalizeDisplayTitle";
+import {
+  computeWorldGalaxyLayout,
+  GALAXY_NODE_FOOTPRINT,
+  type CanvasDimensions,
+} from "@/lib/worldBrain/orbitalLayout";
+import { CONSTELLATION_REGIONS } from "@/lib/regions";
 
 const DISCOVERY_OFFSET = { x: 40, y: 88 };
 const DISCOVERY_ROW_HEIGHT = 64;
+
+const DEFAULT_OVERVIEW_CANVAS: CanvasDimensions = {
+  width: 1280,
+  height: 800,
+  sidebarWidth: 176,
+  panelInset: 0,
+};
 
 export function getDiscoveryPositionInRegion(
   regionId: ConstellationRegionId,
   indexInRegion: number,
 ) {
-  const region = getRegionById(regionId);
+  const region = CONSTELLATION_REGIONS.find((r) => r.id === regionId);
+  if (!region) throw new Error(`Unknown region: ${regionId}`);
   return {
     x: region.position.x + DISCOVERY_OFFSET.x,
     y: region.position.y + DISCOVERY_OFFSET.y + indexInRegion * DISCOVERY_ROW_HEIGHT,
@@ -29,31 +41,30 @@ export function getDiscoveryPositionInRegion(
 export function buildConstellationLayout(
   worldSeed: string,
   discoveries: Discovery[],
+  canvas: CanvasDimensions = DEFAULT_OVERVIEW_CANVAS,
 ): { nodes: Node[]; edges: Edge[] } {
-  const worldSeedNode: Node = {
-    id: "world-seed",
-    type: "worldSeed",
-    position: { x: -100, y: -20 },
-    data: { label: worldSeed },
-    draggable: false,
-    zIndex: 10,
-  };
+  const regionIds = [...new Set(Object.values(DISCOVERY_REGION_MAP))];
+  const galaxyPositions = computeWorldGalaxyLayout(regionIds, canvas);
 
-  const regionNodes: Node[] = CONSTELLATION_REGIONS.map((region) => ({
-    id: `region-${region.id}`,
-    type: "constellationRegion",
-    position: region.position,
-    data: {
-      regionId: region.id,
-      label: region.label,
-      width: region.width,
-      height: region.height,
-    },
-    draggable: false,
-    selectable: false,
-    focusable: false,
-    zIndex: 0,
-  }));
+  const regionNodes: Node[] = regionIds.map((regionId) => {
+    const region = CONSTELLATION_REGIONS.find((r) => r.id === regionId)!;
+    const pos = galaxyPositions[regionId] ?? { x: 0, y: 0 };
+    return {
+      id: `region-${regionId}`,
+      type: "constellationRegion",
+      position: pos,
+      data: {
+        regionId: region.id,
+        label: region.label,
+        width: GALAXY_NODE_FOOTPRINT.width,
+        height: GALAXY_NODE_FOOTPRINT.height,
+      },
+      draggable: false,
+      selectable: false,
+      focusable: false,
+      zIndex: 0,
+    };
+  });
 
   const regionDiscoveryCounts: Record<string, number> = {};
 
@@ -79,16 +90,6 @@ export function buildConstellationLayout(
       zIndex: 5,
     };
   });
-
-  const regionEdges: Edge[] = CONSTELLATION_REGIONS.map((region) => ({
-    id: `edge-seed-${region.id}`,
-    source: "world-seed",
-    target: `region-${region.id}`,
-    style: {
-      stroke: getRegionTheme(region.id).edge,
-      strokeWidth: 1,
-    },
-  }));
 
   const discoveryEdges: Edge[] = discoveryNodes.map((node) => {
     const regionId = DISCOVERY_REGION_MAP[node.id];
@@ -120,25 +121,25 @@ export function buildConstellationLayout(
 }
 
 const THEME_KEYS = Object.keys(REGION_THEMES) as ConstellationRegionId[];
-const OVERVIEW_POSITION_SCALE = 0.82;
 
 /** Spatial overview layout for architecture-generated constellations. */
 export function buildArchitectureOverviewLayout(
   model: CanvasWorldModel,
+  canvas: CanvasDimensions = DEFAULT_OVERVIEW_CANVAS,
 ): { nodes: Node[]; edges: Edge[] } {
   const sorted = [...model.constellations].sort((a, b) => a.priority - b.priority);
+  const ids = sorted.map((c) => c.id);
+  const galaxyPositions = computeWorldGalaxyLayout(ids, canvas);
 
   const regionNodes: Node[] = sorted.map((constellation, i) => {
     const slot = CONSTELLATION_REGIONS[i % CONSTELLATION_REGIONS.length]!;
     const themeKey = THEME_KEYS[i % THEME_KEYS.length]!;
+    const position = galaxyPositions[constellation.id] ?? { x: 0, y: 0 };
 
     return {
       id: `region-${constellation.id}`,
       type: "constellationRegion",
-      position: {
-        x: slot.position.x * OVERVIEW_POSITION_SCALE,
-        y: slot.position.y * OVERVIEW_POSITION_SCALE,
-      },
+      position,
       data: {
         regionId: constellation.id,
         themeKey,
@@ -146,8 +147,8 @@ export function buildArchitectureOverviewLayout(
           constellation.displayTitle || constellation.title,
         ),
         icon: slot.icon,
-        width: slot.width,
-        height: slot.height,
+        width: GALAXY_NODE_FOOTPRINT.width,
+        height: GALAXY_NODE_FOOTPRINT.height,
         description: constellation.description,
         question: constellation.question,
       },

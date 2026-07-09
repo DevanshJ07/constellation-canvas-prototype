@@ -37,6 +37,13 @@ import RipplePreviewPanel from "@/components/RipplePreviewPanel";
 import WorldEvolutionPreviewPanel from "@/components/WorldEvolutionPreviewPanel";
 import DiscoveryPanel from "@/components/DiscoveryPanel";
 import WorldSidebar from "@/components/WorldSidebar";
+import {
+  buildSelectionBreadcrumb,
+  type SelectionBreadcrumbSegment,
+} from "@/lib/buildSelectionBreadcrumb";
+import GalaxyOrbitalScene, {
+  type GalaxyOrbitalSceneHandle,
+} from "@/components/GalaxyOrbitalScene";
 import { buildConstellationLayout, buildArchitectureOverviewLayout } from "@/lib/layoutNodes";
 import { MOCK_DISCOVERIES } from "@/lib/mockDiscoveries";
 import {
@@ -160,27 +167,29 @@ import type { ConstellationReasonerOutput } from "@/lib/worldBrain/constellation
 import { getAgentReasoning } from "@/lib/agentReasoning";
 import { resolveNodeMeta, resolvePanelItem } from "@/lib/worldNodes";
 import {
-  CONSTELLATION_ORBIT_CENTER,
   labelPriority,
   layoutChildNodesAroundParent,
   resolveLabelOffsets,
-  fitLayoutToBounds,
-  DISCOVERY_LAYOUT_BOUNDS,
-  applyPositionMapToNodes,
 } from "@/lib/graphLayout";
 import {
   computeConstellationGalaxyLayout,
   computeInnerSatelliteLayout,
   computePastContextOrbit,
   computeSatelliteNodeLayout,
+  computeOrbitRadiusFromCanvas,
   getNodeDepthScale,
   getOrbitRingRadii,
   getOrbitalVisualState,
-  CONSTELLATION_ORBIT_BASE_RADIUS,
-  CONSTELLATION_ORBIT_RADIUS_STEP,
-  SATELLITE_ORBIT_BASE_RADIUS,
-  SATELLITE_ORBIT_RADIUS_STEP,
 } from "@/lib/orbitalLayout";
+import {
+  computeActiveClusterBounds,
+  computeViewportForCluster,
+  GALAXY_NODE_FOOTPRINT,
+  READABLE_ZOOM_MIN,
+  READABLE_ZOOM_MAX,
+  type CanvasDimensions,
+} from "@/lib/worldBrain/orbitalLayout";
+import { mapCanvasStateToGalaxyScene } from "@/lib/worldBrain/mapCanvasStateToGalaxyScene";
 import { getConstellationTheme, themeChildEdgeStroke } from "@/lib/constellationTheme";
 import { simplifyDisplayLabel } from "@/lib/simplifyDisplayLabel";
 import {
@@ -221,7 +230,7 @@ const EMERGE_GLOW_MS = 800;
 const FIT_DELAY_MS = 80;
 const FIT_DURATION_MS = 600;
 
-const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+const ZOOM_LEVELS = [0.75, 0.85, 1, 1.15, 1.35, 1.5] as const;
 
 function nearestZoomLevel(zoom: number): number {
   return ZOOM_LEVELS.reduce((best, z) =>
@@ -229,30 +238,29 @@ function nearestZoomLevel(zoom: number): number {
   );
 }
 
-// Trail (discovery-mode) orbital layout
-const PAST_STEP_X = 165;
+// Trail (discovery-mode) orbital layout — parent always at logical origin; viewport pan handles insets.
 
 const CONSEQUENCE_EDGE_STYLE = {
-  stroke: "rgba(45, 212, 191, 0.55)",
-  strokeWidth: 1.5,
-  strokeDasharray: "4 3",
+  stroke: "rgba(45, 212, 191, 0.38)",
+  strokeWidth: 1,
 } as const;
 
 const TRAIL_EDGE_STYLE = {
-  stroke: "rgba(167, 139, 250, 0.72)",
-  strokeWidth: 2.5,
+  stroke: "rgba(167, 139, 250, 0.35)",
+  strokeWidth: 1,
 } as const;
 
 const FUTURE_EDGE_STYLE = {
-  stroke: "rgba(148, 163, 184, 0.45)",
-  strokeWidth: 1.5,
-  strokeDasharray: "5 4",
+  stroke: "rgba(148, 163, 184, 0.22)",
+  strokeWidth: 1,
 } as const;
 
 const PAST_EDGE_STYLE = {
-  stroke: "rgba(100, 116, 139, 0.42)",
-  strokeWidth: 1.5,
+  stroke: "rgba(100, 116, 139, 0.28)",
+  strokeWidth: 1,
 } as const;
+
+const ORBITAL_EDGE_TYPE = "default" as const;
 
 const nodeTypes = {
   constellationRegion: ConstellationRegionNode,
@@ -461,9 +469,6 @@ export default function ConstellationCanvas({
   const [reasoningConstellationId, setReasoningConstellationId] = useState<
     string | null
   >(null);
-  const [constellationReasonerHints, setConstellationReasonerHints] = useState<
-    Record<string, string>
-  >({});
   const [isReasoningNode, setIsReasoningNode] = useState(false);
   const [reasoningNodeId, setReasoningNodeId] = useState<string | null>(null);
   const [nodeReasonerError, setNodeReasonerError] = useState<string | null>(null);
@@ -613,11 +618,6 @@ export default function ConstellationCanvas({
 
       setIsReasoningConstellation(true);
       setReasoningConstellationId(id);
-      setConstellationReasonerHints((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
 
       const requestReasoner = async () => {
         const res = await fetch("/api/world/constellation-reasoner", {
@@ -668,10 +668,6 @@ export default function ConstellationCanvas({
               [id]: prev[id]?.length ? prev[id] : archBranches,
             }));
           }
-          setConstellationReasonerHints((prev) => ({
-            ...prev,
-            [id]: "Nearby discoveries are ready to explore.",
-          }));
           return;
         }
 
@@ -699,10 +695,6 @@ export default function ConstellationCanvas({
               [id]: prev[id]?.length ? prev[id] : archBranches,
             }));
           }
-          setConstellationReasonerHints((prev) => ({
-            ...prev,
-            [id]: "Nearby discoveries are ready to explore.",
-          }));
         }
       } finally {
         if (reasonerRequestGenRef.current[id] === nextGen) {
@@ -795,12 +787,20 @@ export default function ConstellationCanvas({
   }, []);
 
   const rfInstance = useRef<ReactFlowInstance | null>(null);
+  const fitActiveClusterRef = useRef<(() => void) | null>(null);
+  const galaxySceneRef = useRef<GalaxyOrbitalSceneHandle | null>(null);
 
   const [viewportWidth, setViewportWidth] = useState(
     typeof window !== "undefined" ? window.innerWidth : 1280,
   );
+  const [viewportHeight, setViewportHeight] = useState(
+    typeof window !== "undefined" ? window.innerHeight : 800,
+  );
   useEffect(() => {
-    const onResize = () => setViewportWidth(window.innerWidth);
+    const onResize = () => {
+      setViewportWidth(window.innerWidth);
+      setViewportHeight(window.innerHeight);
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -808,6 +808,16 @@ export default function ConstellationCanvas({
   const panelInset = computeDetailPanelInset(viewportWidth, Boolean(selectedItem));
   const detailPanelWidth = computeDetailPanelWidth(viewportWidth);
   const canvasRightInset = panelInset > 0 ? `${panelInset}px` : "0";
+
+  const canvasDimensions = useMemo(
+    (): CanvasDimensions => ({
+      width: viewportWidth,
+      height: viewportHeight,
+      sidebarWidth: SIDEBAR_WIDTH_PX,
+      panelInset,
+    }),
+    [viewportWidth, viewportHeight, panelInset],
+  );
 
   const handleViewportChange = useCallback((viewport: { zoom: number }) => {
     setZoomPct(Math.round(viewport.zoom * 100));
@@ -821,22 +831,37 @@ export default function ConstellationCanvas({
   }, []);
 
   const handleZoomIn = useCallback(() => {
+    if (navState.mode === "discovery") {
+      galaxySceneRef.current?.zoomIn();
+      return;
+    }
     const inst = rfInstance.current;
     if (!inst) return;
     const current = nearestZoomLevel(inst.getZoom());
     const idx = ZOOM_LEVELS.indexOf(current as (typeof ZOOM_LEVELS)[number]);
     setZoomLevel(ZOOM_LEVELS[Math.min(ZOOM_LEVELS.length - 1, idx + 1)]);
-  }, [setZoomLevel]);
+  }, [navState.mode, setZoomLevel]);
 
   const handleZoomOut = useCallback(() => {
+    if (navState.mode === "discovery") {
+      galaxySceneRef.current?.zoomOut();
+      return;
+    }
     const inst = rfInstance.current;
     if (!inst) return;
     const current = nearestZoomLevel(inst.getZoom());
     const idx = ZOOM_LEVELS.indexOf(current as (typeof ZOOM_LEVELS)[number]);
     setZoomLevel(ZOOM_LEVELS[Math.max(0, idx - 1)]);
-  }, [setZoomLevel]);
+  }, [navState.mode, setZoomLevel]);
 
-  const handleZoomReset = useCallback(() => setZoomLevel(1), [setZoomLevel]);
+  const handleZoomReset = useCallback(() => {
+    if (navState.mode === "discovery") {
+      galaxySceneRef.current?.resetView();
+      setZoomPct(100);
+      return;
+    }
+    fitActiveClusterRef.current?.();
+  }, [navState.mode]);
 
   const selectedNodeId = useMemo(() => {
     if (!selectedItem) return null;
@@ -844,6 +869,55 @@ export default function ConstellationCanvas({
     if (selectedItem.kind === "ai-discovery") return selectedItem.discovery.id;
     return selectedItem.consequence.id;
   }, [selectedItem]);
+
+  const galaxyDiscoveryScene = useMemo(() => {
+    if (navState.mode !== "discovery") return null;
+    return mapCanvasStateToGalaxyScene({
+      navState,
+      decisions,
+      hiddenIds,
+      weakenedIds,
+      aiBranches,
+      nodeReasonerBranchesByParentId,
+      nodeReasonerPanelMeta,
+      nodeOverrides,
+      architectureCanvasModel,
+      dynamicConstellations,
+      worldSeed,
+      selectedNodeId,
+      ripplePulseIds: canonRipplePulseIds,
+      worldRippleActive:
+        worldChangeCardPhase === "pending" || isGeneratingRipplePreview,
+    });
+  }, [
+    navState,
+    decisions,
+    hiddenIds,
+    weakenedIds,
+    aiBranches,
+    nodeReasonerBranchesByParentId,
+    nodeReasonerPanelMeta,
+    nodeOverrides,
+    architectureCanvasModel,
+    dynamicConstellations,
+    worldSeed,
+    selectedNodeId,
+    canonRipplePulseIds,
+    worldChangeCardPhase,
+    isGeneratingRipplePreview,
+  ]);
+
+  const galaxyThemeOptions = useMemo(
+    () => ({
+      architectureCanvasModel,
+      dynamicColorTheme:
+        navState.mode === "discovery"
+          ? (dynamicConstellations.find((c) => c.id === navState.regionId)?.colorTheme ??
+            null)
+          : null,
+    }),
+    [architectureCanvasModel, dynamicConstellations, navState],
+  );
 
   const handleExploreDeeper = useCallback(async () => {
     if (!architectureCanvasModel || !selectedNodeId) return;
@@ -979,30 +1053,19 @@ export default function ConstellationCanvas({
   );
 
   const baseLayout = useMemo(
-    () => buildConstellationLayout(worldSeed, MOCK_DISCOVERIES),
-    [worldSeed],
+    () => buildConstellationLayout(worldSeed, MOCK_DISCOVERIES, canvasDimensions),
+    [worldSeed, canvasDimensions],
   );
 
   const architectureLayout = useMemo(
     () =>
       architectureCanvasModel
-        ? buildArchitectureOverviewLayout(architectureCanvasModel)
+        ? buildArchitectureOverviewLayout(architectureCanvasModel, canvasDimensions)
         : null,
-    [architectureCanvasModel],
+    [architectureCanvasModel, canvasDimensions],
   );
 
   const overviewLayout = architectureLayout ?? baseLayout;
-
-  useEffect(() => {
-    const t = window.setTimeout(() => {
-      rfInstance.current?.fitView({
-        padding: 0.28,
-        duration: FIT_DURATION_MS,
-        includeHiddenNodes: false,
-      });
-    }, FIT_DELAY_MS);
-    return () => window.clearTimeout(t);
-  }, [navState]);
 
   // ── Trail layout: PAST ← CURRENT → FUTURE ─────────────────────────────────
   const trailLayout = useMemo(() => {
@@ -1014,7 +1077,6 @@ export default function ConstellationCanvas({
     const nodes: Node[] = [];
     const edges: Edge[] = [];
     const focusedId = trail[trail.length - 1];
-    const pastCount = trail.length - 1;
 
     const constellationTheme = architectureCanvasModel
       ? getConstellationTheme(navState.regionId, architectureCanvasModel)
@@ -1029,16 +1091,14 @@ export default function ConstellationCanvas({
       stroke: constellationTheme?.edge ?? FUTURE_EDGE_STYLE.stroke,
     };
     const themedAiEdge = {
-      stroke: constellationTheme?.dot ?? "rgba(139, 92, 246, 0.65)",
-      strokeWidth: 1.5,
-      strokeDasharray: "5 3",
+      stroke: constellationTheme?.dot ?? "rgba(139, 92, 246, 0.35)",
+      strokeWidth: 1,
     };
     const themedNrEdge = {
       stroke: constellationTheme
         ? themeChildEdgeStroke(constellationTheme)
-        : "rgba(56, 189, 248, 0.55)",
-      strokeWidth: 1.5,
-      strokeDasharray: "4 4",
+        : "rgba(56, 189, 248, 0.32)",
+      strokeWidth: 1,
     };
 
     const isConstellationRootView =
@@ -1048,8 +1108,7 @@ export default function ConstellationCanvas({
           dynamicConstellations.some((c) => c.id === focusedId),
       );
 
-    const orbitCenter = CONSTELLATION_ORBIT_CENTER;
-    const focusCenter = isConstellationRootView ? orbitCenter : { x: 0, y: 0 };
+    const focusCenter = { x: 0, y: 0 };
     const explorationDepth = trail.length;
     const depthScale = getNodeDepthScale(explorationDepth);
 
@@ -1122,9 +1181,7 @@ export default function ConstellationCanvas({
       const isFocused = i === trail.length - 1;
       const pastIndex = pastTrailIds.indexOf(id);
       const pastPos = pastIndex >= 0 ? pastOrbitPositions[pastIndex] : null;
-      const x = isFocused
-        ? focusCenter.x
-        : pastPos?.x ?? focusCenter.x - PAST_STEP_X * Math.max(0, pastCount - i);
+      const x = isFocused ? focusCenter.x : pastPos?.x ?? focusCenter.x;
       const y = isFocused ? focusCenter.y : pastPos?.y ?? focusCenter.y;
 
       const trailDecision = decisions[id] ?? "pending";
@@ -1160,7 +1217,7 @@ export default function ConstellationCanvas({
           id: `trail-${trail[i - 1]}-${id}`,
           source: trail[i - 1],
           target: id,
-          type: "smoothstep",
+          type: ORBITAL_EDGE_TYPE,
           animated: isFocused,
           style: isFocused ? themedTrailEdge : PAST_EDGE_STYLE,
         });
@@ -1214,11 +1271,13 @@ export default function ConstellationCanvas({
           center: focusCenter,
           phaseSeed: focusedId,
           depthLevel: explorationDepth,
+          canvas: canvasDimensions,
         })
       : computeSatelliteNodeLayout(futureIds.length, {
           center: focusCenter,
           phaseSeed: focusedId,
           depthLevel: explorationDepth,
+          canvas: canvasDimensions,
         });
 
     const moonOrbitPositions =
@@ -1227,6 +1286,7 @@ export default function ConstellationCanvas({
             center: focusCenter,
             phaseSeed: `${focusedId}_moons`,
             depthLevel: explorationDepth + 1,
+            canvas: canvasDimensions,
           })
         : [];
 
@@ -1284,7 +1344,7 @@ export default function ConstellationCanvas({
         id: `future-${focusedId}-${id}`,
         source: focusedId,
         target: id,
-        type: "smoothstep",
+        type: ORBITAL_EDGE_TYPE,
         animated: kind === "consequence" || ai,
         style: ai
           ? themedAiEdge
@@ -1347,7 +1407,7 @@ export default function ConstellationCanvas({
         id: `nr-future-${focusedId}-${branch.id}`,
         source: focusedId,
         target: branch.id,
-        type: "smoothstep",
+        type: ORBITAL_EDGE_TYPE,
         animated: true,
         style: themedNrEdge,
       });
@@ -1356,11 +1416,9 @@ export default function ConstellationCanvas({
     const totalSatellites = totalSatelliteCount;
     if (totalSatellites > 0) {
       const orbitBase = isConstellationRootView
-        ? CONSTELLATION_ORBIT_BASE_RADIUS
-        : SATELLITE_ORBIT_BASE_RADIUS;
-      const orbitStep = isConstellationRootView
-        ? CONSTELLATION_ORBIT_RADIUS_STEP
-        : SATELLITE_ORBIT_RADIUS_STEP;
+        ? computeOrbitRadiusFromCanvas(canvasDimensions, "constellation")
+        : computeOrbitRadiusFromCanvas(canvasDimensions, "satellite");
+      const orbitStep = orbitBase * 0.14;
       const ringRadii = getOrbitRingRadii(
         totalSatellites,
         orbitBase * depthScale,
@@ -1391,11 +1449,13 @@ export default function ConstellationCanvas({
             center: focusCenter,
             phaseSeed: `${focusedId}_ghost`,
             depthLevel: explorationDepth,
+            canvas: canvasDimensions,
           })
         : computeInnerSatelliteLayout(minVisualSlots, {
             center: focusCenter,
             phaseSeed: `${focusedId}_ghost_moon`,
             depthLevel: explorationDepth + 1,
+            canvas: canvasDimensions,
           });
       ghostLayout.slice(totalSatellites).forEach((position, index) => {
         nodes.unshift({
@@ -1410,22 +1470,58 @@ export default function ConstellationCanvas({
       });
     }
 
-    const layoutBounds = {
-      ...DISCOVERY_LAYOUT_BOUNDS,
-      maxX: selectedItem ? DISCOVERY_LAYOUT_BOUNDS.maxX - 40 : DISCOVERY_LAYOUT_BOUNDS.maxX,
-    };
-    const positionMap: Record<string, { x: number; y: number }> = {};
-    for (const n of nodes) {
-      positionMap[n.id] = n.position;
+    return { nodes, edges };
+  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds, aiBranches, weakenedIds, nodeOverrides, dynamicConstellations, architectureCanvasModel, nodeReasonerBranchesByParentId, nodeReasonerPanelMeta, canvasDimensions, worldSeed, canonRipplePulseIds, worldChangeCardPhase, isGeneratingRipplePreview]);
+
+  const fitActiveCluster = useCallback(() => {
+    const inst = rfInstance.current;
+    if (!inst) return;
+
+    let clusterNodeIds: string[] = [];
+    const positions: Record<string, { x: number; y: number }> = {};
+    let nodeSize = { width: 56, height: 56 };
+
+    if (navState.mode === "overview") {
+      for (const node of overviewLayout.nodes) {
+        if (node.type !== "constellationRegion") continue;
+        clusterNodeIds.push(node.id);
+        positions[node.id] = node.position;
+      }
+      nodeSize = GALAXY_NODE_FOOTPRINT;
+    } else if (navState.mode === "discovery") {
+      // Galaxy orbital scene handles discovery layout in pixel space.
+      return;
     }
-    const fitted = fitLayoutToBounds(positionMap, layoutBounds, {
-      padding: 32,
-      minScale: 0.42,
-      maxScale: 1,
+
+    if (clusterNodeIds.length === 0) return;
+
+    const bounds = computeActiveClusterBounds(positions, clusterNodeIds, nodeSize);
+    const target = computeViewportForCluster(bounds, canvasDimensions, {
+      minZoom: READABLE_ZOOM_MIN,
+      maxZoom: READABLE_ZOOM_MAX,
+      targetFill: navState.mode === "overview" ? 0.64 : 0.72,
     });
 
-    return { nodes: applyPositionMapToNodes(nodes, fitted), edges };
-  }, [navState, decisions, hiddenIds, justAcceptedId, creatorDirections, justEmergedIds, aiBranches, weakenedIds, nodeOverrides, dynamicConstellations, architectureCanvasModel, nodeReasonerBranchesByParentId, nodeReasonerPanelMeta, selectedItem, worldSeed, canonRipplePulseIds, worldChangeCardPhase, isGeneratingRipplePreview]);
+    inst.setCenter(target.centerX, target.centerY, {
+      zoom: target.zoom,
+      duration: FIT_DURATION_MS,
+    });
+    setZoomPct(Math.round(target.zoom * 100));
+  }, [navState.mode, overviewLayout.nodes, trailLayout.nodes, canvasDimensions]);
+
+  fitActiveClusterRef.current = fitActiveCluster;
+
+  useEffect(() => {
+    const t = window.setTimeout(() => fitActiveCluster(), FIT_DELAY_MS);
+    return () => window.clearTimeout(t);
+  }, [
+    fitActiveCluster,
+    navState,
+    panelInset,
+    justEmergedIds,
+    worldChangeCardPhase,
+    isGeneratingRipplePreview,
+  ]);
 
   // ── Canon layout: living evolution tree ─────────────────────────────────────
   const worldState = useMemo(
@@ -1488,7 +1584,7 @@ export default function ConstellationCanvas({
   );
 
   // ── Nodes ─────────────────────────────────────────────────────────────────
-  const nodes = useMemo(() => {
+  const nodes = useMemo((): Node[] => {
     const { mode } = navState;
 
     if (mode === "canon") {
@@ -1496,8 +1592,7 @@ export default function ConstellationCanvas({
     }
 
     if (mode === "discovery") {
-      const base = applyLabelOffsets(trailLayout.nodes, selectedNodeId);
-      return injectRippleStates(base, rippleStates);
+      return [];
     }
 
     return overviewLayout.nodes.map((node) => {
@@ -1583,10 +1678,10 @@ export default function ConstellationCanvas({
   ]);
 
   // ── Edges ─────────────────────────────────────────────────────────────────
-  const edges = useMemo(() => {
+  const edges = useMemo((): Edge[] => {
     const { mode } = navState;
 
-    if (mode === "discovery") return trailLayout.edges;
+    if (mode === "discovery") return [];
     if (mode === "canon") return [];
     return [];
   }, [navState, trailLayout.edges]);
@@ -1713,6 +1808,68 @@ export default function ConstellationCanvas({
     [aiBranches, architectureCanvasModel, reasonedNodeDetails, nodeReasonerBranchesByParentId, nodeReasonerPanelMeta],
   );
 
+  const selectGalaxyNode = useCallback(
+    (targetId: string) => {
+      const nrBranch = Object.values(nodeReasonerBranchesByParentId)
+        .flat()
+        .find((b) => b.id === targetId);
+      if (nrBranch) {
+        setSelectedItem({
+          kind: "ai-discovery",
+          discovery: nodeReasonerBranchToAiDiscovery(
+            nrBranch,
+            nodeReasonerPanelMeta[nrBranch.id],
+          ),
+        });
+        return;
+      }
+
+      const allAiBranches = Object.values(aiBranches).flat();
+      const aiBranch = allAiBranches.find((b) => b.id === targetId);
+      const archNode = architectureCanvasModel?.nodes.find((n) => n.id === targetId);
+      if (archNode) {
+        const constellation = architectureCanvasModel!.constellations.find(
+          (c) => c.id === archNode.constellationId,
+        );
+        const agentName = constellation
+          ? getAgentNameForConstellation(architectureCanvasModel!, constellation)
+          : "Reasoning Agent";
+        setSelectedItem({
+          kind: "ai-discovery",
+          discovery: canvasNodeToAiDiscovery(archNode, agentName),
+        });
+        return;
+      }
+      if (aiBranch) {
+        setSelectedItem({
+          kind: "ai-discovery",
+          discovery: reasonedBranchToAiDiscovery(
+            aiBranch,
+            reasonedNodeDetails[aiBranch.id],
+          ),
+        });
+        return;
+      }
+
+      const item = resolvePanelItem(targetId);
+      if (item) setSelectedItem(item);
+    },
+    [
+      aiBranches,
+      architectureCanvasModel,
+      reasonedNodeDetails,
+      nodeReasonerBranchesByParentId,
+      nodeReasonerPanelMeta,
+    ],
+  );
+
+  const handleGalaxyNodeClick = useCallback(
+    (nodeId: string) => {
+      selectGalaxyNode(nodeId);
+    },
+    [selectGalaxyNode],
+  );
+
   /** Enter exploration mode for an architecture constellation (pre-seeded starting nodes). */
   const handleArchitectureConstellationEnter = useCallback(
     (constellation: CanvasConstellation) => {
@@ -1721,11 +1878,6 @@ export default function ConstellationCanvas({
         worldSeed,
         "Constellation",
       );
-      setConstellationReasonerHints((prev) => {
-        const next = { ...prev };
-        delete next[constellation.id];
-        return next;
-      });
       setNavState({
         mode: "discovery",
         discoveryId: constellation.id,
@@ -2713,6 +2865,95 @@ export default function ConstellationCanvas({
 
   const activeTrail = navState.mode === "discovery" ? navState.trail : [];
 
+  const selectionBreadcrumb = useMemo(
+    () =>
+      buildSelectionBreadcrumb({
+        navState,
+        selectedNodeId,
+        resolveTitle: getDisplayTitle,
+        architectureCanvasModel,
+        dynamicConstellations,
+        aiBranches,
+        nodeReasonerBranchesByParentId,
+        nodeConstellationMap,
+      }),
+    [
+      navState,
+      selectedNodeId,
+      getDisplayTitle,
+      architectureCanvasModel,
+      dynamicConstellations,
+      aiBranches,
+      nodeReasonerBranchesByParentId,
+      nodeConstellationMap,
+    ],
+  );
+
+  const handleBreadcrumbNavigate = useCallback(
+    (segment: SelectionBreadcrumbSegment) => {
+      if (segment.kind === "world") {
+        handleNavigate({ mode: "overview" });
+        return;
+      }
+
+      if (segment.kind === "constellation") {
+        const archConst = architectureCanvasModel?.constellations.find(
+          (c) => c.id === segment.id,
+        );
+        const dynConst = dynamicConstellations.find((c) => c.id === segment.id);
+
+        if (navState.mode === "discovery" && navState.regionId === segment.id) {
+          setNavState((prev) =>
+            prev.mode === "discovery" ? { ...prev, trail: [segment.id] } : prev,
+          );
+          selectGalaxyNode(segment.id);
+          return;
+        }
+
+        if (archConst) {
+          const displayTitle = canvasNodeLabel(
+            archConst.displayTitle || archConst.title,
+            worldSeed,
+            "Constellation",
+          );
+          setNavState({
+            mode: "discovery",
+            discoveryId: archConst.id,
+            regionId: archConst.id,
+            discoveryTitle: displayTitle,
+            trail: [archConst.id],
+          });
+          selectGalaxyNode(archConst.id);
+          return;
+        }
+
+        if (dynConst) {
+          setNavState({
+            mode: "discovery",
+            discoveryId: dynConst.id,
+            regionId: dynConst.id,
+            discoveryTitle: dynConst.title,
+            trail: [dynConst.id],
+          });
+          selectGalaxyNode(dynConst.id);
+        }
+        return;
+      }
+
+      if (segment.kind === "node") {
+        selectGalaxyNode(segment.id);
+      }
+    },
+    [
+      handleNavigate,
+      navState,
+      architectureCanvasModel,
+      dynamicConstellations,
+      worldSeed,
+      selectGalaxyNode,
+    ],
+  );
+
   const handleSetDirection = useCallback(
     (direction: string) => {
       if (!selectedNodeId) return;
@@ -3224,8 +3465,11 @@ export default function ConstellationCanvas({
         creatorTruths={creatorTruths}
         dynamicConstellations={dynamicConstellations}
       />
-      {!(showOverviewOverlay) && (
-        <Breadcrumb navState={navState} onNavigate={handleNavigate} />
+      {navState.mode !== "canon" && (
+        <Breadcrumb
+          segments={selectionBreadcrumb}
+          onNavigate={handleBreadcrumbNavigate}
+        />
       )}
       <WorldPulse shift={latestShift} nonce={pulseNonce} />
       {!(showOverviewOverlay) && (
@@ -3241,20 +3485,6 @@ export default function ConstellationCanvas({
           >
             <span className="rounded-full border border-violet-500/40 bg-violet-950/60 px-4 py-1.5 text-[11px] text-violet-200 shadow-[0_0_20px_rgba(139,92,246,0.2)]">
               Reasoning inside {navState.discoveryTitle}…
-            </span>
-          </div>
-        )}
-      {navState.mode === "discovery" &&
-        architectureCanvasModel &&
-        navState.regionId &&
-        constellationReasonerHints[navState.regionId] &&
-        !isReasoningConstellation && (
-          <div
-            className="pointer-events-none absolute z-20 flex justify-center"
-            style={{ left: `${SIDEBAR_WIDTH_PX}px`, right: canvasRightInset, top: "78px" }}
-          >
-            <span className="rounded-full border border-slate-600/40 bg-slate-950/60 px-4 py-1.5 text-[11px] text-slate-300/90">
-              {constellationReasonerHints[navState.regionId]}
             </span>
           </div>
         )}
@@ -3309,10 +3539,8 @@ export default function ConstellationCanvas({
       )}
       {navState.mode !== "canon" && (
       <ZoomControlsBar
-        zoomPct={zoomPct}
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
-        onReset={handleZoomReset}
         panelInset={panelInset}
       />
       )}
@@ -3375,7 +3603,21 @@ export default function ConstellationCanvas({
         </div>
       )}
 
-      {navState.mode !== "canon" && !showOverviewOverlay && (
+      {navState.mode === "discovery" && galaxyDiscoveryScene && !showOverviewOverlay && (
+        <div className="absolute inset-y-0 right-0" style={{ left: "176px" }}>
+          <GalaxyOrbitalScene
+            ref={galaxySceneRef}
+            scene={galaxyDiscoveryScene}
+            onNodeClick={handleGalaxyNodeClick}
+            showRipple
+            panelInset={panelInset}
+            themeOptions={galaxyThemeOptions}
+            onZoomChange={setZoomPct}
+          />
+        </div>
+      )}
+
+      {navState.mode !== "canon" && navState.mode !== "discovery" && !showOverviewOverlay && (
       <div
         className="absolute inset-y-0 right-0"
         style={{ left: "176px" }}
@@ -3391,10 +3633,8 @@ export default function ConstellationCanvas({
           setZoomPct(Math.round(instance.getZoom() * 100));
         }}
         onViewportChange={handleViewportChange}
-        fitView
-        fitViewOptions={{ padding: 0.28, includeHiddenNodes: false }}
-        minZoom={0.5}
-        maxZoom={2}
+        minZoom={0.75}
+        maxZoom={1.5}
         panOnDrag
         panOnScroll={false}
         zoomOnScroll
@@ -3447,6 +3687,8 @@ export default function ConstellationCanvas({
           hasNodeReasonerCache={hasNodeReasonerCache}
           panelWidth={detailPanelWidth}
           worldSeed={worldSeed}
+          breadcrumbSegments={selectionBreadcrumb}
+          onBreadcrumbNavigate={handleBreadcrumbNavigate}
         />
       )}
 

@@ -1,121 +1,41 @@
 "use client";
 
-import { useMemo } from "react";
-import { CONSTELLATION_REGIONS } from "@/lib/regions";
-import { getNodeTitle } from "@/lib/worldNodes";
-import type { NavState } from "@/types/discovery";
-
-type Segment = {
-  label: string;
-  icon?: string;
-  onClick?: () => void;
-};
+import type { SelectionBreadcrumbSegment } from "@/lib/buildSelectionBreadcrumb";
 
 type BreadcrumbProps = {
-  navState: NavState;
-  onNavigate: (state: NavState) => void;
+  segments: SelectionBreadcrumbSegment[];
+  onNavigate: (segment: SelectionBreadcrumbSegment) => void;
 };
 
-export default function Breadcrumb({ navState, onNavigate }: BreadcrumbProps) {
-  const segments = useMemo((): Segment[] => {
-    const worldSegment: Segment = {
-      label: "World",
-      onClick: () => onNavigate({ mode: "overview" }),
-    };
-
-    if (navState.mode === "overview") {
-      return [{ label: "World" }];
-    }
-
-    if (navState.mode === "canon") {
-      return [{ label: "Canon Universe" }];
-    }
-
-    const region = CONSTELLATION_REGIONS.find(
-      (r) =>
-        r.id ===
-        (navState.mode === "constellation" || navState.mode === "discovery"
-          ? navState.regionId
-          : ""),
-    );
-
-    if (navState.mode === "constellation") {
-      return [
-        worldSegment,
-        { label: region?.label ?? "", icon: region?.icon },
-      ];
-    }
-
-    if (navState.mode === "discovery") {
-      const trail = navState.trail;
-      // Skip the first trail item if it is the virtual region root
-      // (its label is already shown as the region segment)
-      const displayTrail =
-        trail.length > 0 && trail[0] === navState.regionId
-          ? trail.slice(1)
-          : trail;
-
-      const trailSegments: Segment[] = displayTrail.map((id, i) => {
-        const isLast = i === displayTrail.length - 1;
-        // Map back to real trail index (+1 if we skipped the virtual root)
-        const realIdx = trail.length > 0 && trail[0] === navState.regionId ? i + 1 : i;
-        return {
-          label: getNodeTitle(id),
-          onClick: isLast
-            ? undefined
-            : () =>
-                onNavigate({
-                  ...navState,
-                  trail: trail.slice(0, realIdx + 1),
-                }),
-        };
-      });
-
-      return [
-        worldSegment,
-        {
-          label: region?.label ?? "",
-          icon: region?.icon,
-          onClick: () =>
-            onNavigate({
-              mode: "overview",
-            }),
-        },
-        ...trailSegments,
-      ];
-    }
-
-    return [{ label: "World" }];
-  }, [navState, onNavigate]);
+export default function Breadcrumb({ segments, onNavigate }: BreadcrumbProps) {
+  if (segments.length === 0) return null;
 
   return (
-    <div
-      className="absolute top-0 z-20 flex h-9 items-center gap-1.5 px-4"
-      style={{ left: "176px" }}
+    <nav
+      aria-label="World location"
+      className="absolute top-3 z-20 flex max-w-[min(640px,calc(100vw-220px))] items-center"
+      style={{ left: "184px" }}
     >
-      {segments.map((seg, i) => (
-        <span key={i} className="flex items-center gap-1.5">
-          {i > 0 && (
-            <span className="text-slate-500 select-none">›</span>
-          )}
-          {seg.icon && (
-            <span className="text-[13px] leading-none opacity-60">
-              {seg.icon}
-            </span>
-          )}
-          {seg.onClick ? (
-            <button
-              type="button"
-              onClick={seg.onClick}
-              className="text-xs font-medium text-slate-400 transition hover:text-slate-100"
-            >
-              {seg.label}
-            </button>
-          ) : (
-            <span className="text-xs font-medium text-slate-100">{seg.label}</span>
-          )}
-        </span>
-      ))}
-    </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg border border-slate-700/55 bg-slate-950/88 px-3 py-1.5 shadow-[0_4px_20px_rgba(0,0,0,0.35),inset_0_0_0_1px_rgba(148,163,184,0.06)] backdrop-blur-md">
+        {segments.map((seg, i) => (
+          <span key={`${seg.id}-${i}`} className="flex min-w-0 items-center gap-1">
+            {i > 0 && (
+              <span className="shrink-0 px-0.5 text-[11px] text-slate-600 select-none">›</span>
+            )}
+            {!seg.isLast ? (
+              <button
+                type="button"
+                onClick={() => onNavigate(seg)}
+                className="truncate text-xs font-medium text-slate-400 transition hover:text-violet-200/90"
+              >
+                {seg.label}
+              </button>
+            ) : (
+              <span className="truncate text-xs font-medium text-slate-100">{seg.label}</span>
+            )}
+          </span>
+        ))}
+      </div>
+    </nav>
   );
 }

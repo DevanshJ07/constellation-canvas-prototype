@@ -11,10 +11,11 @@ import {
   toStoryHookTitle,
   enrichPanelDescription,
   enrichWhyItMatters,
+  enrichExplorationQuestions,
   formatCreatorCategory,
   sanitizeCreatorCopy,
 } from "@/lib/creatorCopy";
-import { buildSteeringChips } from "@/lib/steeringChips";
+import type { SelectionBreadcrumbSegment } from "@/lib/buildSelectionBreadcrumb";
 import type { AgentVoice } from "@/lib/agentVoices";
 import type { AgentReasoning } from "@/lib/agentReasoning";
 import type { AgentSelectInput } from "@/lib/agentSelect";
@@ -34,12 +35,6 @@ export type JourneyStep = {
   subtitle?: string;
   role?: "origin" | "step" | "current";
 };
-
-const FALLBACK_STEER_EXAMPLES = [
-  "Raise the emotional cost before the plot cost",
-  "Make the safest choice feel like betrayal",
-  "Give this path one secret the world is hiding",
-];
 
 type DiscoveryPanelProps = {
   item: PanelItem;
@@ -70,6 +65,8 @@ type DiscoveryPanelProps = {
   hasNodeReasonerCache?: boolean;
   panelWidth?: number;
   worldSeed?: string;
+  breadcrumbSegments?: SelectionBreadcrumbSegment[];
+  onBreadcrumbNavigate?: (segment: SelectionBreadcrumbSegment) => void;
 };
 
 export default function DiscoveryPanel({
@@ -98,6 +95,8 @@ export default function DiscoveryPanel({
   hasNodeReasonerCache = false,
   panelWidth,
   worldSeed = "",
+  breadcrumbSegments = [],
+  onBreadcrumbNavigate,
 }: DiscoveryPanelProps) {
   const [draftDirection, setDraftDirection] = useState("");
   const [localLoading, setLocalLoading] = useState(false);
@@ -145,15 +144,10 @@ export default function DiscoveryPanel({
   const rippleHint = isAiNode ? sanitizeCreatorCopy(item.discovery.rippleHint ?? "") : null;
   const whyPromising = isAiNode ? enrichWhyItMatters(item.discovery.whyPromising, panelCtx) : null;
   const risk = isAiNode ? item.discovery.risk : null;
-  const explorationQuestions = isAiNode ? item.discovery.explorationQuestions : null;
+  const explorationQuestions = isAiNode
+    ? enrichExplorationQuestions(item.discovery.explorationQuestions, panelCtx)
+    : null;
   const nodeType = isAiNode ? item.discovery.nodeType : null;
-
-  const steerChips = buildSteeringChips({
-    worldSeed,
-    nodeTitle: title,
-    nodeDescription: description,
-    category: category ?? undefined,
-  });
 
   const isAccepted = decision === "accepted";
   const isRejected = decision === "rejected";
@@ -183,10 +177,37 @@ export default function DiscoveryPanel({
       }}
     >
       {/* Header */}
-      <div className="shrink-0 border-b border-slate-800/80 px-5 py-4">
+      <div className="shrink-0 border-b border-slate-800/80 px-5 py-3">
+        {breadcrumbSegments.length > 0 && (
+          <nav
+            aria-label="Selection location"
+            className="mb-2 flex flex-wrap items-center gap-1 text-[11px] leading-snug"
+          >
+            {breadcrumbSegments.map((seg, i) => (
+              <span key={`${seg.id}-${i}`} className="flex min-w-0 items-center gap-1">
+                {i > 0 && <span className="shrink-0 text-slate-600 select-none">›</span>}
+                {!seg.isLast && onBreadcrumbNavigate ? (
+                  <button
+                    type="button"
+                    onClick={() => onBreadcrumbNavigate(seg)}
+                    className="truncate text-slate-500 transition hover:text-violet-300/90"
+                  >
+                    {seg.label}
+                  </button>
+                ) : (
+                  <span
+                    className={`truncate ${seg.isLast ? "text-slate-400" : "text-slate-500"}`}
+                  >
+                    {seg.label}
+                  </span>
+                )}
+              </span>
+            ))}
+          </nav>
+        )}
         <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-xs uppercase tracking-wider text-violet-400/80">
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] uppercase tracking-wider text-violet-400/80">
               {isAiNode ? (
                 <span className="text-violet-300/90">
                   ✦ Emergent Discovery · {formatCreatorCategory(nodeType ?? category) ?? "Living Thread"}
@@ -215,21 +236,21 @@ export default function DiscoveryPanel({
         </div>
       </div>
 
-      {/* Scrollable body */}
-      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
-        <section>
-          <h3 className="mb-2 text-xs uppercase tracking-wider text-slate-500">
+      {/* Scrollable body — primary content focus */}
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+        <section className="rounded-lg border border-slate-800/50 bg-slate-900/20 px-4 py-3.5">
+          <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
             Description
           </h3>
-          <p className="max-w-prose text-sm leading-[1.65] text-slate-300">{description}</p>
+          <p className="max-w-prose text-sm leading-[1.7] text-slate-300">{description}</p>
         </section>
 
         {(whyItMatters || whyPromising) && (
-          <section>
-            <h3 className="mb-2 text-xs uppercase tracking-wider text-slate-500">
+          <section className="rounded-lg border border-slate-800/40 bg-slate-900/10 px-4 py-3.5">
+            <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
               Why it matters
             </h3>
-            <p className="max-w-prose text-sm leading-[1.65] text-slate-400">
+            <p className="max-w-prose text-sm leading-[1.7] text-slate-400">
               {whyPromising ?? whyItMatters}
             </p>
           </section>
@@ -247,7 +268,7 @@ export default function DiscoveryPanel({
         {explorationQuestions && explorationQuestions.length > 0 && (
           <section>
             <h3 className="mb-2 text-xs uppercase tracking-wider text-slate-500">
-              Exploration questions
+              Possible directions
             </h3>
             <ul className="space-y-1.5">
               {explorationQuestions.map((q, i) => (
@@ -433,62 +454,46 @@ export default function DiscoveryPanel({
         )}
       </div>
 
-      {/* ─── Sticky bottom: Steer + Actions ─────────────────────────────────── */}
+      {/* ─── Sticky bottom: compact Steer + Actions ─────────────────────────── */}
       <div className="shrink-0 border-t border-slate-800/80">
-        {/* Steer This Path */}
-        <div className="border-b border-slate-800/60 px-4 py-3">
-          <div className="mb-2 flex items-center gap-1.5">
-            <span className="text-[10px] text-amber-400/70">✦</span>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-400/80">
-              Steer This Path
-            </p>
-          </div>
+        <div className="border-b border-slate-800/60 px-4 py-2.5">
+          <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-amber-400/70">
+            Steer This Path
+          </p>
 
           {creatorDirection && (
-            <div className="mb-2 rounded-md border border-amber-800/30 bg-amber-950/25 px-2.5 py-1.5">
-              <p className="text-[9px] uppercase tracking-wider text-amber-600/70">
-                Current direction
-              </p>
-              <p className="mt-0.5 text-[11px] italic text-amber-200/75">
-                "{creatorDirection}"
-              </p>
-            </div>
+            <p className="mb-1.5 truncate text-[10px] italic text-amber-200/60">
+              Active: &ldquo;{creatorDirection}&rdquo;
+            </p>
           )}
 
-          <textarea
-            value={draftDirection}
-            onChange={(e) => setDraftDirection(e.target.value)}
-            placeholder="Add a twist, constraint, or direction..."
-            rows={2}
-            className="w-full resize-none rounded-md border border-slate-700/60 bg-slate-900/60 px-2.5 py-2 text-xs text-slate-200 placeholder-slate-600 outline-none transition focus:border-amber-700/60 focus:ring-1 focus:ring-amber-800/40"
-          />
-
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            {(steerChips.length > 0 ? steerChips : FALLBACK_STEER_EXAMPLES).map((ex) => (
-              <button
-                key={ex}
-                type="button"
-                onClick={() => setDraftDirection(ex)}
-                className="rounded-full border border-slate-700/50 bg-slate-900/40 px-2 py-0.5 text-[9px] text-slate-500 transition hover:border-amber-800/50 hover:text-amber-300/80"
-              >
-                {ex}
-              </button>
-            ))}
+          <div className="flex items-stretch gap-2">
+            <textarea
+              value={draftDirection}
+              onChange={(e) => setDraftDirection(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void handleGenerate();
+                }
+              }}
+              placeholder="Add a twist, constraint, or direction..."
+              rows={1}
+              className="min-h-[34px] flex-1 resize-none rounded-md border border-slate-700/60 bg-slate-900/60 px-2.5 py-2 text-xs text-slate-200 placeholder-slate-600 outline-none transition focus:border-amber-700/60 focus:ring-1 focus:ring-amber-800/40"
+            />
+            <button
+              type="button"
+              disabled={(!draftDirection.trim() && !creatorDirection) || isGenerating}
+              onClick={() => void handleGenerate()}
+              className="shrink-0 rounded-md border border-amber-800/40 bg-amber-950/30 px-3 text-xs font-semibold text-amber-300 transition hover:border-amber-700/60 hover:bg-amber-950/50 disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Apply and generate paths"
+            >
+              {isGenerating ? "…" : "Apply"}
+            </button>
           </div>
 
-          <button
-            type="button"
-            disabled={(!draftDirection.trim() && !creatorDirection) || isGenerating}
-            onClick={handleGenerate}
-            className="mt-2 w-full rounded-lg border border-amber-800/40 bg-amber-950/30 px-4 py-2 text-xs font-semibold text-amber-300 transition hover:border-amber-700/60 hover:bg-amber-950/50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {isGenerating ? "Specialists are shaping new paths..." : "Apply & Generate Paths"}
-          </button>
-
           {exploreError && !isGenerating && (
-            <p className="mt-1.5 text-[10px] leading-snug text-rose-400/80">
-              {exploreError}
-            </p>
+            <p className="mt-1 text-[10px] leading-snug text-rose-400/80">{exploreError}</p>
           )}
         </div>
 

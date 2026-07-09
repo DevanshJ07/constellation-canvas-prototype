@@ -1,11 +1,13 @@
 /**
- * Reasoning quality guard tests (Phase 6D) — no network.
+ * Reasoning quality guard tests (Phase 6D / 6E.1) — no network.
  */
 
 import {
   guardNodeDescription,
   isShallowNodeDescription,
   repairShallowNodeDescription,
+  buildRichFallbackDescription,
+  buildRichFallbackDirections,
 } from "../lib/worldBrain/reasoningQualityGuard.ts";
 
 function assert(condition: boolean, message: string) {
@@ -17,6 +19,13 @@ console.log("=== Reasoning quality guard (no network) ===\n");
 assert(
   isShallowNodeDescription("A concrete entry point into Tech Premise."),
   "detects entry point shallow copy",
+);
+
+assert(
+  isShallowNodeDescription(
+    "Anchor all exploration in the specific premise: Psychological horror universe rooted in forgotten Indian folklore.",
+  ),
+  "detects anchor-all-exploration fallback",
 );
 
 assert(
@@ -45,5 +54,22 @@ const guarded = guardNodeDescription("Explore the concept of blackmail.", {
 });
 
 assert(!isShallowNodeDescription(guarded), "guard replaces shallow description");
+
+const horrorSeed =
+  "psychological horror universe rooted in forgotten Indian folklore";
+const rich = buildRichFallbackDescription({
+  title: "Fear Spreads Faster Than the Truth",
+  worldPrompt: horrorSeed,
+});
+assert(rich.length >= 80, "rich fallback has substance");
+assert(!/anchor all exploration/i.test(rich), "rich fallback avoids generic phrase");
+assert(!rich.toLowerCase().includes(horrorSeed.slice(0, 40).toLowerCase()), "rich fallback does not repeat seed");
+
+const directions = buildRichFallbackDirections({
+  title: "Fear Spreads Faster Than the Truth",
+  worldPrompt: `${horrorSeed} with five friends lost in a cave`,
+});
+assert(directions.length >= 3, "fallback directions provided");
+assert(directions.every((d) => d.length >= 20), "directions are specific");
 
 console.log("\nAll reasoning quality guard checks passed.");

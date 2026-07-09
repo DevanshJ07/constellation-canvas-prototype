@@ -16,3 +16,17 @@ export function computeDetailPanelInset(
 ): number {
   return panelOpen ? computeDetailPanelWidth(viewportWidth) : 0;
 }
+
+/** Screen-space center of the usable canvas (excluding sidebar and detail panel). */
+export function computeUsableCanvasCenter(
+  viewportWidth: number,
+  viewportHeight: number,
+  panelInset: number,
+): { x: number; y: number } {
+  const left = SIDEBAR_WIDTH_PX;
+  const right = Math.max(left + 320, viewportWidth - panelInset);
+  return {
+    x: left + (right - left) / 2,
+    y: viewportHeight / 2,
+  };
+}

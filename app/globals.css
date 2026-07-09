@@ -268,3 +268,153 @@ body {
 .animate-ripple-pulse {
   animation: ripple-pulse-ring 1.15s ease-in-out infinite;
 }
+
+@keyframes galaxy-v2-ripple {
+  0% {
+    stroke-dashoffset: 80;
+    opacity: 0;
+  }
+  25% {
+    opacity: 0.45;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+
+.galaxy-v2-ripple-path {
+  stroke-dasharray: 4 12;
+  stroke-dashoffset: 80;
+  animation: galaxy-v2-ripple 2s ease-out forwards;
+}
+
+@keyframes galaxy-v2-sun-breathe {
+  0%,
+  100% {
+    opacity: 0.92;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.galaxy-v2-sun {
+  animation: galaxy-v2-sun-breathe 5.5s ease-in-out infinite;
+}
+
+.galaxy-v2-sun-outer {
+  animation: galaxy-v2-sun-outer 7s ease-in-out infinite;
+}
+
+@keyframes galaxy-v2-sun-outer {
+  0%,
+  100% {
+    opacity: 0.75;
+    transform: scale(1);
+    transform-origin: center;
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+    transform-origin: center;
+  }
+}
+
+@keyframes galaxy-v2-orbit-drift {
+  0% {
+    stroke-dashoffset: 0;
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: -30;
+    opacity: 0.85;
+  }
+}
+
+.galaxy-v2-orbit-drift {
+  animation: galaxy-v2-orbit-drift 24s linear infinite;
+}
+
+.galaxy-v2-orbit-moon {
+  animation-duration: 18s;
+}
+
+@keyframes galaxy-v2-focus-pulse {
+  0%,
+  100% {
+    opacity: 0.78;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.galaxy-v2-focus-ring {
+  animation: galaxy-v2-focus-pulse 3s ease-in-out infinite;
+}
+
+@keyframes galaxy-v2-halo-shimmer {
+  0%,
+  100% {
+    opacity: 0.62;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.galaxy-v2-halo-shimmer {
+  animation: galaxy-v2-halo-shimmer 4s ease-in-out infinite;
+}
+
+.galaxy-v2-flow-path {
+  stroke-dasharray: 3 10;
+  stroke-linecap: round;
+  animation: galaxy-v2-flow-drift 14s linear infinite;
+}
+
+.galaxy-v2-flow-path-active {
+  stroke-dasharray: 3 8;
+  animation-duration: 9s;
+}
+
+.galaxy-v2-flow-path-moon {
+  stroke-dasharray: 2 7;
+  animation-duration: 11s;
+}
+
+@keyframes galaxy-v2-flow-drift {
+  0% {
+    stroke-dashoffset: 26;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes galaxy-v2-moon-presence {
+  0%,
+  100% {
+    opacity: 0.52;
+  }
+  50% {
+    opacity: 0.88;
+  }
+}
+
+.galaxy-v2-moon-presence {
+  animation: galaxy-v2-moon-presence 5s ease-in-out infinite;
+}
+
+.galaxy-v2-moon-marker {
+  animation: none;
+}
+
+.galaxy-v2-focus-ring-outer {
+  animation: galaxy-v2-orbit-drift 20s linear infinite reverse;
+  opacity: 0.82;
+}

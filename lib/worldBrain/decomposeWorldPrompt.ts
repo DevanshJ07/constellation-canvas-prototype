@@ -290,10 +290,10 @@ function buildPromptBasedFallback(
     requiredCreativeLayers: [
       {
         name: `${w1} Premise Layer`,
-        purpose: `Anchor all exploration in the specific premise: ${truncatedPrompt}`,
+        purpose: `${w1} names the first pressure that makes this world unsafe to treat as background — a rule, fear, or secret the story cannot ignore.`,
         whyNeeded: "Without a premise anchor, branches drift into unrelated genres.",
         shouldExplore: [
-          `What makes "${truncatedPrompt}" unique?`,
+          `What breaks first when ${w1} stops being abstract?`,
           "What is the single most surprising element of this premise?",
           "What would break the premise if introduced?",
         ],
