@@ -332,7 +332,7 @@ export function normalizeNodeReasonerOutput(
   };
 }
 
-function applyQualityGuardToNodeOutput(
+export function applyQualityGuardToNodeOutput(
   output: NodeReasonerOutput,
   input: NodeReasonerInput,
 ): NodeReasonerOutput {

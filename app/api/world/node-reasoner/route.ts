@@ -11,7 +11,13 @@ import type {
   NodeReasonerUserSteering,
 } from "@/lib/worldBrain/nodeReasonerTypes";
 import type { CanvasWorldModel } from "@/lib/worldBrain/mapArchitectureToCanvas";
-import { reasonNodeWorld } from "@/lib/worldBrain/reasonNode";
+import {
+  buildNodeReasonerAgentInput,
+  buildNodeReasonerEnvironment,
+  buildNodeReasonerMemory,
+  NODE_REASONER_FALLBACK_COPY,
+  runNodeReasonerAgent,
+} from "@/lib/worldBrain/agents/nodeReasonerAgent";
 
 type NodeReasonerRequestBody = {
   canvasModel?: CanvasWorldModel;
@@ -26,6 +32,10 @@ type NodeReasonerRequestBody = {
   depthContext?: NodeDepthContext;
   localSummary?: string;
   explorationAxes?: ExplorationAxis[];
+  /** Optional — titles of nodes the user has previously rejected. */
+  rejectedTitles?: string[];
+  /** Optional — ids of nodes the user has previously rejected. */
+  rejectedIds?: string[];
 };
 
 function isCanvasWorldModel(value: unknown): value is CanvasWorldModel {
@@ -120,20 +130,57 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: false, error: message }, { status: 400 });
   }
 
+  // ── Build GAME agent inputs ────────────────────────────────────────────────
+  const existingCanon = body.existingCanon ?? [];
+  const rejectedIds = Array.isArray(body.rejectedIds) ? body.rejectedIds : [];
+  const rejectedTitles = Array.isArray(body.rejectedTitles) ? body.rejectedTitles : [];
+
+  const memory = buildNodeReasonerMemory({
+    worldSeed: body.canvasModel.worldSeed,
+    worldPurpose: body.purpose ?? null,
+    acceptedCanonItems: existingCanon,
+    rejectedIds,
+    activeSteeringText: body.userSteering?.instruction ?? null,
+    architectureSummary: body.architectureSummary ?? null,
+  });
+
+  const environment = buildNodeReasonerEnvironment({
+    navMode: "discovery",
+    evolutionApplyInProgress: false,
+    canonLocked: false,
+    totalNodeCount: availableNodes.length,
+    totalConstellationCount: body.canvasModel.constellations.length,
+    canvasModelVersion: null,
+  });
+
+  const agentInput = buildNodeReasonerAgentInput(input, memory, environment, rejectedTitles);
+
+  // ── Run agent ─────────────────────────────────────────────────────────────
   try {
-    const output = await reasonNodeWorld(input);
+    const agentResult = await runNodeReasonerAgent(agentInput);
 
-    console.info(
-      "[node-reasoner]",
-      JSON.stringify({
-        selectedConstellationId,
-        selectedNodeId,
-        possibleNewNodeCount: output.possibleNewNodes.length,
-        scopeLevel: output.explorationScope.scopeLevel,
-      }),
-    );
+    console.info("[node-reasoner]", JSON.stringify({
+      selectedConstellationId,
+      selectedNodeId,
+      agentStatus: agentResult.status,
+      attemptNumber: agentResult.attemptNumber,
+      validationValid: agentResult.validation.valid,
+      possibleNewNodeCount: agentResult.output?.possibleNewNodes.length ?? 0,
+      scopeLevel: agentResult.output?.explorationScope.scopeLevel ?? null,
+      fallbackCopy: agentResult.status === "fallback" ? agentResult.userFacingFallbackCopy : null,
+    }));
 
-    return NextResponse.json({ success: true, output });
+    // ── Fallback path: return user-facing message without error ─────────────
+    if (agentResult.status === "fallback" || agentResult.output === null) {
+      return NextResponse.json({
+        success: false,
+        error: NODE_REASONER_FALLBACK_COPY,
+        userFacingFallbackCopy: agentResult.userFacingFallbackCopy,
+      }, { status: 200 });
+    }
+
+    // ── Success / partial-success: preserve existing API response shape ─────
+    return NextResponse.json({ success: true, output: agentResult.output });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Node reasoning failed";
     console.error("[node-reasoner] error:", message);

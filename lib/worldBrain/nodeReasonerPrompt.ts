@@ -333,22 +333,67 @@ Each possibleNewNode description must deepen the SELECTED node with a specific c
 Required fields:
 - description: concrete idea continuing the selected node (not a category)
 - whyThisFollows: explicit continuity from the selected node
+- continuationAnchor: exact part of the selected node being continued (required, ≥8 chars)
 - discoveryQuestion: what the creator should explore next
 
-FORBIDDEN:
-- "entry point into", "explore the concept", prompt restatement
-- generic beats ("The Hero", "The Villain", "The Conflict")
-- ideas that could exist without the selected node
+NEVER write these phrases (instant rejection):
+- "entry point into"
+- "explores the concept"
+- "a specific idea about"
+- "this represents"
+- "this develops the premise"
+- "what makes X unique" (unless inside a complete concrete sentence)
+- "anchor all exploration"
+- "exploration zone"
+- "concrete entry point"
+- "grounded in the world / seed / premise"
+- "this node explores / examines / focuses on"
+- "meaningful discoveries inside"
+- "a specific / concrete starting point"
 
-Examples (pattern only):
-Selected: Childhood Memory Bank (memory economy)
-GOOD: "A Loan Paid in Birthdays — parents mortgage their child's tenth birthday to pay rent, leaving a gap in her timeline she can feel but not name."
+NEVER use generic beats as displayTitle:
+- "The Hero", "The Villain", "The Conflict", "The Atmosphere", "The Vibe"
+- "Dark Place", "Scary Person", "Mysterious Element"
 
-Selected: The Train Station Dream (romance/disaster)
-GOOD: "The Ticket Dated Tomorrow — both lovers find the same impossible ticket in their pockets after waking, but only one remembers buying it."
+NEVER:
+- Repeat the seed prompt verbatim inside a description
+- Use abstract genre labels without a concrete object, event, or consequence
+- Generate a node that could exist without the selected node
 
-Selected: Map-Eating Crabs (comedy treasure hunt)
-GOOD: "The Half-Digested Map Corner — the crew realizes the crabs prefer fake X marks, meaning every decoy on the island was drawn by someone who wanted them lost."`;
+GOOD vs BAD examples:
+
+BAD: "A concrete entry point into Tech Premise."
+GOOD: "The hacker discovers the company's dataset predicts which employees will betray friends under pressure, turning blackmail from financial theft into moral exposure."
+
+BAD: "Explore the horror atmosphere."
+GOOD: "The temple bell rings only when someone lies about what they saw, forcing the group to suspect each other before any monster appears."
+
+BAD: "This node explores the concept of memory loss."
+GOOD: "The patient cannot remember her daughter's name but can recite her daughter's entire schedule from three years ago — a gap that only makes sense if the memory was sold, not lost."
+
+BAD: "An entry point into the Cave Constellation."
+GOOD: "A rock formation blocks the exit and exactly matches the shadow the group saw before they entered — implying the cave rotated around them while they slept."
+
+Each description must contain at least one of:
+- a specific named object, location, or person (proper noun or "the X")
+- a concrete action (betrayal, transaction, discovery, rule-breaking)
+- a cause-effect construction ("because…", "forcing…", "leaving…", "turning…")`;
+
+const LABEL_DEPTH_RULES = `═══ LABEL / displayTitle DEPTH ═══
+displayTitle must be a specific 1–4 word noun phrase.
+It must HINT at the concrete content of the node — not its genre or category.
+
+GOOD:
+- "Windless Bell", "Tomorrow Ticket", "Shared Account", "Backward Clock"
+- "Cracked Lady Idol", "Hidden Sanctum Stair", "Fresh Marigolds"
+
+BAD:
+- "Mysterious Object", "Horror Element", "Symbolic Place", "Eerie Atmosphere"
+- "Character Moment", "World Building Clue", "Discovery Node"
+
+If the node is about a character action: name the action or the object it involves.
+If the node is about a place: name its most distinctive physical feature.
+If the node is about a rule: name the rule's consequence, not the category.`;
 
 const DISPLAY_TITLE_RULES = `═══ displayTitle RULES ═══
 - title = richer internal discovery name (can be longer and more evocative).
@@ -595,6 +640,8 @@ export function buildNodeReasonerPrompt(input: NodeReasonerInput): string {
     ANTI_DRIFT_RULES,
     "",
     NODE_DESCRIPTION_DEPTH_RULES,
+    "",
+    LABEL_DEPTH_RULES,
     "",
     DISPLAY_TITLE_RULES,
     "",
