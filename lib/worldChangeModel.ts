@@ -86,10 +86,19 @@ export function buildWorldChangeCardModel(
       .map((item) => simplifyDisplayLabel(item.title ?? item.nodeId)),
   ].slice(0, 4);
 
-  const consequences = preview.operationPreviews
-    .filter((op) => op.approvalState !== "rejected")
-    .slice(0, 4)
-    .map((op) => plainConsequence(op.reason || op.title || op.description));
+  // Prefer GAME Phase 8C userFacingBullets when present on the source output
+  // (stored on preview model via passthrough — fall back to operation reasons)
+  const rawBullets =
+    "userFacingBullets" in preview && Array.isArray((preview as Record<string, unknown>)["userFacingBullets"])
+      ? ((preview as Record<string, unknown>)["userFacingBullets"] as string[]).slice(0, 4)
+      : null;
+
+  const consequences = rawBullets && rawBullets.length > 0
+    ? rawBullets.map((b) => sanitizeCreatorCopy(b))
+    : preview.operationPreviews
+        .filter((op) => op.approvalState !== "rejected")
+        .slice(0, 4)
+        .map((op) => plainConsequence(op.reason || op.title || op.description));
 
   const attentionWarnings = preview.warningPreviews.filter(
     (w) => w.requiresUserAttention,
@@ -119,11 +128,19 @@ export function buildWorldChangeCardModel(
     reviewNeededMessage = "Some changes need review before they can be applied.";
   }
 
+  // Prefer GAME Phase 8C userFacingSummary when present
+  const rawUserFacingSummary =
+    "userFacingSummary" in preview && typeof (preview as Record<string, unknown>)["userFacingSummary"] === "string"
+      ? ((preview as Record<string, unknown>)["userFacingSummary"] as string)
+      : null;
+
   return {
     phase: "ready",
     title: "This changes your world",
     subtitle: IMPACT_PHRASES[preview.impactLevel] ?? "Your world will shift",
-    summary: sanitizeCreatorCopy(preview.summary),
+    summary: rawUserFacingSummary
+      ? sanitizeCreatorCopy(rawUserFacingSummary)
+      : sanitizeCreatorCopy(preview.summary),
     affectedAreas,
     consequences,
     ...(caution ? { caution } : {}),

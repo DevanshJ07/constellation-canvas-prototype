@@ -177,7 +177,11 @@ export const RIPPLE_EFFECT_JSON_SCHEMA_DESCRIPTION = `{
     }
   ],
   "followUpQuestions": ["string — questions for user when clarification is needed"],
-  "confidence": "number 0-1 — overall confidence in this ripple assessment"
+  "confidence": "number 0-1 — overall confidence in this ripple assessment",
+  "userFacingSummary": "string — 1-2 sentences in plain creator language. REQUIRED. No backend terms. Start with what the decision does to the world. Example: 'Establishing the Memory Price Index as truth makes black market brokers more significant and introduces pressure on the formal economy.'",
+  "userFacingBullets": [
+    "string — up to 4 short plain-language consequence lines. Use phrases like: 'This makes X more important.', 'This weakens Y.', 'This may introduce Z.', 'This affects [area].', 'This needs review because it touches [canon].' NEVER use: operation, patch, dry run, apply plan, blocker, validation, JSON, LLM, API."
+  ]
 }
 
 Schema notes:
@@ -185,7 +189,44 @@ Schema notes:
 - nodeImpacts.suggestedOperationIds MUST reference ids present in suggestedOperations.
 - warnings explain risks or conflicts; use mark_for_critic_review operation for deep canon issues.
 - preservedElements identify what should NOT be changed (especially established truth).
-- impactLevel must match actual scope — do not inflate to major/structural without justification.`;
+- impactLevel must match actual scope — do not inflate to major/structural without justification.
+- userFacingSummary and userFacingBullets are REQUIRED. They must use plain creator language only.`;
+
+const USER_FACING_COPY_RULES = `═══ USER-FACING COPY RULES (REQUIRED) ═══
+You MUST include userFacingSummary and userFacingBullets in every response.
+
+userFacingSummary rules:
+- 1-2 sentences max.
+- Plain creator language only.
+- Describe what the decision does to the world.
+- NEVER use these words: operation, patch, dry run, apply plan, blocker, validation, JSON, LLM, API, suggestedOperation, nodeImpact, triggerEventId, parse, Gemini, HTTP.
+
+Good userFacingSummary:
+"Establishing the Memory Price Index as truth makes black market memory brokers more significant and puts the formal currency exchange under pressure."
+
+Bad userFacingSummary:
+"The ripple operation patch will apply a validation to the suggested operations list."
+
+userFacingBullets rules:
+- Up to 4 items.
+- Each bullet is one sentence.
+- Use these phrase patterns:
+  "This makes [thing] more important."
+  "This weakens [thing]."
+  "This may introduce [thing]."
+  "This affects [area/constellation]."
+  "This needs review because it touches [canon item]."
+- NEVER use: operation, patch, dry run, apply plan, blocker, validation, JSON, LLM, API.
+
+Good bullets:
+- "This makes black market memory brokers more central to the story."
+- "This weakens the formal currency exchange as a story element."
+- "This may introduce a memory tax office or regulatory body."
+- "This affects the Memory Economy constellation."
+
+Bad bullets:
+- "This operation patches the node validation."
+- "Apply plan dry run needed for blocker resolution."`;
 
 const OUTPUT_INSTRUCTIONS = `═══ OUTPUT FORMAT ═══
 Return JSON only — a single valid JSON object matching RippleEffectOutput.
@@ -198,7 +239,8 @@ Additional consistency rules:
 - triggerEventId MUST equal the trigger decision event id from INPUT CONTEXT.
 - Every confidence field MUST be between 0 and 1 inclusive.
 - Do not invent canvas node ids not present in Current Canvas Snapshot unless generate_new_node operations propose new ids in payload with clear justification.
-- Prefer preservedElements for all truth canon nodes unless the trigger explicitly revises them.`;
+- Prefer preservedElements for all truth canon nodes unless the trigger explicitly revises them.
+- userFacingSummary and userFacingBullets are REQUIRED — never omit them.`;
 
 function formatTriggerSection(input: RippleEffectPromptInput): string {
   const e = input.triggerEvent;
@@ -402,6 +444,8 @@ export function buildRippleEffectPrompt(input: RippleEffectPromptInput): string 
     formatInputContext(input),
     "",
     RIPPLE_EFFECT_PROMPT_RULES,
+    "",
+    USER_FACING_COPY_RULES,
     "",
     OUTPUT_INSTRUCTIONS,
   ].join("\n");

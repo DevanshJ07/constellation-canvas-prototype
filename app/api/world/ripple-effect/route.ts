@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
-import { buildRippleEffectInput } from "@/lib/worldBrain/buildRippleEffectPlan";
 import type { CanvasWorldModel } from "@/lib/worldBrain/mapArchitectureToCanvas";
-import { reasonRippleEffect } from "@/lib/worldBrain/reasonRippleEffect";
 import type {
   RippleAffectedScope,
   RippleEvaluationMode,
@@ -12,6 +10,14 @@ import type {
   DecisionEventLog,
   UserDecisionEvent,
 } from "@/lib/worldBrain/userDecisionTypes";
+import { summarizeCanonStateFromEventLog } from "@/lib/worldBrain/decisionEventLog";
+import {
+  buildRippleConsequenceAgentInput,
+  buildRippleConsequenceEnvironment,
+  buildRippleConsequenceMemory,
+  RIPPLE_AGENT_FALLBACK_COPY,
+  runRippleConsequenceAgent,
+} from "@/lib/worldBrain/agents/rippleConsequenceAgent";
 
 type RippleEffectRequestBody = {
   triggerEvent?: UserDecisionEvent;
@@ -133,45 +139,112 @@ export async function POST(request: Request) {
     );
   }
 
-  const rippleInput = buildRippleEffectInput({
-    triggerEvent: body.triggerEvent,
-    decisionLog: body.decisionLog,
-    canvasModel: body.canvasModel,
-    activeCanonState: body.activeCanonState,
-    affectedScopeHint: body.affectedScopeHint,
-    userSteering: body.userSteering,
-    evaluationMode: body.evaluationMode,
+  // Derive canon state from decision log if not provided
+  const activeCanonState: CanonStateSnapshot =
+    body.activeCanonState ?? summarizeCanonStateFromEventLog(body.decisionLog);
+
+  // ── Build GAME agent inputs ────────────────────────────────────────────────
+  const memory = buildRippleConsequenceMemory({
+    worldSeed: body.canvasModel.worldSeed,
+    worldPurpose: body.canvasModel.worldSummary ?? null,
+    truthCanonIds: activeCanonState.truthNodeIds,
+    truthCanonTitles: [],
+    rejectedIds: activeCanonState.rejectedNodeIds,
+    activeSteeringText: body.userSteering?.instruction ?? null,
+    architectureSummary: body.canvasModel.worldSummary ?? null,
   });
 
-  const result = await reasonRippleEffect(rippleInput, {
-    includeRawText: process.env.NODE_ENV === "development",
+  const environment = buildRippleConsequenceEnvironment({
+    navMode: "discovery",
+    evolutionApplyInProgress: false,
+    canonLocked: false,
+    totalNodeCount: body.canvasModel.nodes?.length ?? 0,
+    totalConstellationCount: body.canvasModel.constellations.length,
+    canvasModelVersion: null,
   });
 
-  const payload = {
-    success: result.success,
-    output: result.output,
-    warnings: result.warnings,
-    errors: result.errors,
-    validationResult: result.validationResult,
-    providerMetadata: result.providerMetadata,
-    ...(process.env.NODE_ENV === "development" && result.rawText
-      ? { rawText: result.rawText.slice(0, 4000) }
-      : {}),
-  };
+  const agentInput = buildRippleConsequenceAgentInput(
+    {
+      triggerEvent: body.triggerEvent,
+      decisionLog: body.decisionLog,
+      canvasModel: body.canvasModel,
+      activeCanonState,
+      affectedScopeHint: body.affectedScopeHint,
+      userSteering: body.userSteering,
+      evaluationMode: body.evaluationMode,
+    },
+    memory,
+    environment,
+  );
 
-  if (result.success) {
-    return NextResponse.json(payload, { status: 200 });
-  }
+  // ── Run agent ─────────────────────────────────────────────────────────────
+  const agentResult = await runRippleConsequenceAgent(agentInput);
 
-  if (isProviderConfigError(result.errors)) {
+  console.info("[ripple-effect]", JSON.stringify({
+    triggerEventId: body.triggerEvent.id,
+    agentStatus: agentResult.status,
+    attemptNumber: agentResult.attemptNumber,
+    validationValid: agentResult.validation.valid,
+    operationCount: agentResult.output?.suggestedOperations.length ?? 0,
+    impactLevel: agentResult.output?.impactLevel ?? null,
+    hasUserFacingSummary: Boolean(agentResult.output?.userFacingSummary),
+  }));
+
+  // ── Fallback path ─────────────────────────────────────────────────────────
+  if (agentResult.status === "fallback" || agentResult.output === null) {
+    const isProviderErr = agentResult.failure?.internalDetail?.includes("GEMINI_API_KEY") ||
+      agentResult.failure?.internalDetail?.includes("OPENROUTER_API_KEY");
+
+    if (isProviderErr) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: agentResult.failure?.internalDetail ?? "Provider error",
+          errors: [agentResult.failure?.internalDetail ?? "Provider error"],
+          warnings: [],
+        },
+        { status: 500 },
+      );
+    }
+
     return NextResponse.json(
-      { ...payload, error: result.errors[0] ?? "Provider error" },
-      { status: 500 },
+      {
+        success: false,
+        error: RIPPLE_AGENT_FALLBACK_COPY,
+        errors: [agentResult.failure?.internalDetail ?? RIPPLE_AGENT_FALLBACK_COPY],
+        warnings: [],
+      },
+      { status: 422 },
     );
   }
 
-  return NextResponse.json(
-    { ...payload, error: result.errors[0] ?? "Ripple analysis could not be validated" },
-    { status: 422 },
-  );
+  // ── Success / partial-success: preserve existing API response shape ────────
+  const payload = {
+    success: true,
+    output: agentResult.output,
+    warnings: agentResult.validation.issues
+      .filter((i) => i.severity === "warning")
+      .map((i) => i.message),
+    errors: [],
+    validationResult: {
+      valid: agentResult.validation.valid,
+      errors: agentResult.validation.issues
+        .filter((i) => i.severity === "error")
+        .map((i) => i.message),
+      warnings: agentResult.validation.issues
+        .filter((i) => i.severity === "warning")
+        .map((i) => i.message),
+    },
+    ...(process.env.NODE_ENV === "development"
+      ? {
+          agentMeta: {
+            agentStatus: agentResult.status,
+            attemptNumber: agentResult.attemptNumber,
+            validationSummary: agentResult.validation.summary,
+          },
+        }
+      : {}),
+  };
+
+  return NextResponse.json(payload, { status: 200 });
 }

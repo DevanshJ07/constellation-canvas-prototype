@@ -626,6 +626,18 @@ export function normalizeRippleEffectOutput(
     preservedElements,
     followUpQuestions: stringArray(record.followUpQuestions),
     confidence: boundConfidence(record.confidence, 0.5),
+    // GAME Phase 8C — optional user-facing copy fields
+    ...(typeof record.userFacingSummary === "string" && record.userFacingSummary.trim().length > 0
+      ? { userFacingSummary: record.userFacingSummary.trim() }
+      : {}),
+    ...(Array.isArray(record.userFacingBullets)
+      ? {
+          userFacingBullets: (record.userFacingBullets as unknown[])
+            .filter((b): b is string => typeof b === "string" && b.trim().length > 0)
+            .map((b) => b.trim())
+            .slice(0, 5),
+        }
+      : {}),
   };
 
   return { output, warnings };

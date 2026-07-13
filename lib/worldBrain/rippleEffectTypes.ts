@@ -280,6 +280,17 @@ export type RippleEffectOutput = {
   followUpQuestions: string[];
   /** Overall confidence in this ripple assessment (0–1). */
   confidence: RippleConfidenceScore;
+  /**
+   * GAME Phase 8C — user-facing plain-language summary for WorldChangeCard.
+   * Written without backend terms. Safe to display directly to creators.
+   * Optional for backwards compatibility — falls back to `summary` if absent.
+   */
+  userFacingSummary?: string;
+  /**
+   * GAME Phase 8C — up to 4 plain-language consequence bullets for WorldChangeCard.
+   * Each bullet starts with the affected element and uses creator-facing language.
+   */
+  userFacingBullets?: string[];
 };
 
 // ── Prompt builder aliases (future Phase 4.x) ─────────────────────────────────────
