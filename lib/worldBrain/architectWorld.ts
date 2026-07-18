@@ -23,6 +23,38 @@ export type NodeType =
 
 export type CriticSeverity = "soft" | "medium" | "strict";
 
+/**
+ * Story-world structural role for a constellation (Phase 9A).
+ * These are structural roles, not fixed names — titles stay world-specific.
+ */
+export type ConstellationCategory =
+  | "characters"
+  | "settings"
+  | "themes"
+  | "conflict"
+  | "timeline"
+  | "mysteries"
+  | "power"
+  | "climax"
+  | "canon"
+  | "other";
+
+export const CONSTELLATION_CATEGORIES: readonly ConstellationCategory[] = [
+  "characters",
+  "settings",
+  "themes",
+  "conflict",
+  "timeline",
+  "mysteries",
+  "power",
+  "climax",
+  "canon",
+  "other",
+];
+
+/** How sensitive a constellation is to accepted canon (Phase 9A). */
+export type CanonSensitivity = "low" | "medium" | "high";
+
 export type VisibleConstellation = {
   id: string;
   title: string;
@@ -32,6 +64,18 @@ export type VisibleConstellation = {
   linkedReasoningAgentIds: string[];
   suggestedStartingNodeIds: string[];
   priority: number;
+  /** Story-world structural role (Phase 9A). */
+  category?: ConstellationCategory;
+  /** What this area does for the story (drives conflict, reveals truth, etc.). */
+  storyFunction?: string;
+  /** Why a creator should care about this area emotionally / narratively. */
+  whyItMatters?: string;
+  /** Open questions that push development forward. */
+  developmentQuestions?: string[];
+  /** How strongly accepted canon reshapes this area. */
+  canonSensitivity?: CanonSensitivity;
+  /** How this area should evolve as canon accumulates. */
+  evolutionBehavior?: string;
 };
 
 export type ReasoningAgent = {
@@ -64,6 +108,12 @@ export type StartingNode = {
   risk: string;
   explorationQuestions: string[];
   nodeType: NodeType;
+  /** How a creator can actually use this in the story (Phase 9A). */
+  storyUse?: string;
+  /** A concrete conflict or tension this node can create (Phase 9A). */
+  possibleConflict?: string;
+  /** Why this node belongs in its constellation (Phase 9A). */
+  whyItBelongsHere?: string;
 };
 
 export type ArchitectureControlRules = {
@@ -2453,6 +2503,256 @@ function syncConstellationNodeIds(
   }
 }
 
+// ── Story-world category coverage (Phase 9A) ─────────────────────────────────
+
+const CATEGORY_KEYWORDS: Record<Exclude<ConstellationCategory, "other">, RegExp> = {
+  characters:
+    /\b(character|people|cast|friend|crew|protagonist|hero|villain|personalit|relationship|wound|desire|fear|witness|survivor|hacker)\b/i,
+  settings:
+    /\b(setting|location|place|house|cave|temple|city|village|company|world|environment|room|building|forest|jungle|ship|station|land)\b/i,
+  themes:
+    /\b(theme|moral|belief|guilt|trust|betrayal|meaning|question|motif|faith|identity|sacrifice|philosoph|emotional)\b/i,
+  conflict:
+    /\b(conflict|opposition|pressure|struggle|fight|war|clash|tension|rivalry|threat|enemy|breaking)\b/i,
+  timeline:
+    /\b(timeline|era|time|history|past|future|hours|years|breach|accident|epoch|chronolog|before|after|missing hours)\b/i,
+  mysteries:
+    /\b(myster|secret|hidden|unknown|question|forbidden|truth|answer|riddle|unexplained|vanish|knows)\b/i,
+  power:
+    /\b(power|institution|government|corporation|company|religion|family system|control|authority|law|system of|regime|hierarchy)\b/i,
+  climax:
+    /\b(climax|endgame|converge|reckoning|final pressure|the night|the choice|the leak|breaks trust|answers|demands a choice)\b/i,
+  canon:
+    /\b(canon|accepted truth|locked fact|world state|established|truth)\b/i,
+};
+
+/** Infer a story-world category from a constellation's title/purpose/function. */
+function inferConstellationCategory(c: VisibleConstellation): ConstellationCategory {
+  if (c.category && CONSTELLATION_CATEGORIES.includes(c.category) && c.category !== "other") {
+    return c.category;
+  }
+  const text = `${c.title} ${c.purpose} ${c.storyFunction ?? ""} ${c.userFacingQuestion}`;
+  // Climax and canon are highest-signal roles — check them first.
+  if (CATEGORY_KEYWORDS.canon.test(c.title)) return "canon";
+  if (CATEGORY_KEYWORDS.climax.test(c.title)) return "climax";
+  const ordered: Exclude<ConstellationCategory, "other">[] = [
+    "characters",
+    "settings",
+    "themes",
+    "conflict",
+    "timeline",
+    "mysteries",
+    "power",
+    "climax",
+    "canon",
+  ];
+  for (const cat of ordered) {
+    if (CATEGORY_KEYWORDS[cat].test(text)) return cat;
+  }
+  return "other";
+}
+
+/**
+ * Guarantee story-world structural coverage: every architecture should have
+ * Characters, Settings, Themes, an adaptive Climax, and a Canon Universe area.
+ * Titles stay world-specific; only missing structural roles are appended.
+ */
+function ensureStoryWorldCoverage(
+  architecture: Omit<WorldArchitecture, "usedFallback" | "fallbackReason">,
+  decomposition: WorldPromptDecomposition,
+  seenIds: Set<string>,
+): void {
+  const prompt = decomposition.originalPrompt;
+  const w1 = pickSeedWord(prompt, 0);
+  const w2 = pickSeedWord(prompt, 1);
+  const constellations = architecture.visibleConstellations;
+  const agents = architecture.reasoningAgents;
+
+  // Assign an inferred category to every constellation that lacks one.
+  const usedCategories = new Set<ConstellationCategory>();
+  for (const c of constellations) {
+    const inferred = inferConstellationCategory(c);
+    if (!c.category || c.category === "other") c.category = inferred;
+    usedCategories.add(c.category);
+  }
+
+  const anchorAgentId = agents[0]?.id ?? "";
+
+  const appendConstellation = (
+    title: string,
+    category: ConstellationCategory,
+    purpose: string,
+    question: string,
+    storyFunction: string,
+    whyItMatters: string,
+    canonSensitivity: CanonSensitivity,
+    evolutionBehavior: string,
+    developmentQuestions: string[],
+  ): void => {
+    const id = toStableId("constellation", title, seenIds);
+    const agentIdx = constellations.length % Math.max(1, agents.length);
+    const agentId = agents[agentIdx]?.id ?? anchorAgentId;
+    if (agentId) {
+      const agent = agents.find((a) => a.id === agentId);
+      if (agent && !agent.linkedConstellationIds.includes(id)) {
+        agent.linkedConstellationIds.push(id);
+      }
+    }
+    constellations.push({
+      id,
+      title,
+      purpose,
+      userFacingQuestion: question,
+      sourceCreativeLayer: title,
+      linkedReasoningAgentIds: agentId ? [agentId] : [],
+      suggestedStartingNodeIds: [],
+      priority: constellations.length + 1,
+      category,
+      storyFunction,
+      whyItMatters,
+      developmentQuestions,
+      canonSensitivity,
+      evolutionBehavior,
+    });
+    usedCategories.add(category);
+  };
+
+  // Climax / Endgame Pressure — must always exist, adaptive, non-final.
+  if (!usedCategories.has("climax")) {
+    appendConstellation(
+      `The Night ${w1} Answers`,
+      "climax",
+      `Where the accepted secrets, choices, and pressures around ${w1} could finally converge.`,
+      `Which established truths would collide if everything came to a head?`,
+      "Holds possible endgame pressures that tighten as canon is accepted — not a fixed ending.",
+      "It gives every earlier choice a place to matter without locking the story into one conclusion.",
+      "high",
+      "Reshapes its possible climaxes each time a truth is established, staying tied to accepted canon nodes.",
+      [
+        `What accepted truth makes the ending unavoidable?`,
+        `Whose choice decides how the pressure breaks?`,
+      ],
+    );
+  }
+
+  // Canon Universe — accepted truths / locked facts / evolving world state.
+  if (!usedCategories.has("canon")) {
+    appendConstellation(
+      "The Canon Universe",
+      "canon",
+      "The accepted truths, locked facts, and consequences that the rest of the world must respect.",
+      "What has been established as true, and what does it force everywhere else?",
+      "Tracks established canon and radiates consequences into every other area.",
+      "Once something is true here, the whole world has to answer to it.",
+      "high",
+      "Grows as truths are established; each locked fact constrains and pressures the other constellations.",
+      [
+        `Which truths are now locked and cannot be undone?`,
+        `What consequence has not yet been paid for?`,
+      ],
+    );
+  }
+
+  // Characters — required structural role.
+  if (!usedCategories.has("characters")) {
+    appendConstellation(
+      `The ${w1} Circle`,
+      "characters",
+      `The people at the center of ${w1}: their wounds, desires, fears, and the tensions between them.`,
+      `Whose hidden wound is about to shape everything?`,
+      "Surfaces the personalities, contradictions, and relationship tensions that drive decisions.",
+      "Every world decision lands harder when it costs a specific person something.",
+      "medium",
+      "Deepens as canon reveals who each person really is under pressure.",
+      [`What does each person want but refuse to admit?`, `Which relationship is one betrayal from breaking?`],
+    );
+  }
+
+  // Settings — required structural role.
+  if (!usedCategories.has("settings")) {
+    appendConstellation(
+      `The Place That Holds ${w1}`,
+      "settings",
+      `The important locations, their atmosphere, rules of place, and hidden histories.`,
+      `What does this place remember that the characters don't?`,
+      "Establishes where events happen and the rules and secrets those places impose.",
+      "A location with its own rules and history makes the world feel real and dangerous.",
+      "medium",
+      "Reveals more hidden history and shifting rules as canon is established.",
+      [`What rule does this place enforce on everyone inside it?`, `What history is buried here?`],
+    );
+  }
+
+  // Themes — required structural role.
+  if (!usedCategories.has("themes")) {
+    appendConstellation(
+      `${w1}, Guilt, and ${w2}`,
+      "themes",
+      `The moral, emotional, and philosophical tensions and recurring motifs underneath the story.`,
+      `What question is this world really asking?`,
+      "Keeps the emotional and moral stakes clear so events mean something.",
+      "Theme is what makes the reader feel the events instead of just watching them.",
+      "low",
+      "Sharpens as accepted truths force the central questions into the open.",
+      [`What belief will be tested to its breaking point?`, `What is the cost of doing the right thing here?`],
+    );
+  }
+
+  // Keep priorities coherent after appends.
+  architecture.visibleConstellations.forEach((c, i) => {
+    c.priority = i + 1;
+  });
+
+  syncConstellationNodeIds(
+    architecture.visibleConstellations,
+    architecture.startingNodes,
+  );
+}
+
+const GENERIC_STORY_FIELD =
+  /^(a |an |the )?(concrete|vivid|specific|generic|interesting|compelling|entry point|idea|element|exploration|story element|main idea)\b/i;
+
+function isGenericStoryField(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 12) return true;
+  if (GENERIC_STORY_FIELD.test(t)) return true;
+  return false;
+}
+
+/**
+ * Fill in Phase 9A node story fields (storyUse / possibleConflict / whyItBelongsHere)
+ * with concrete, node-specific copy when the model omitted them or returned filler.
+ */
+function enrichStartingNodeStoryFields(
+  architecture: Omit<WorldArchitecture, "usedFallback" | "fallbackReason">,
+  decomposition: WorldPromptDecomposition,
+): void {
+  const byId = new Map(
+    architecture.visibleConstellations.map((c) => [c.id, c] as const),
+  );
+  for (const node of architecture.startingNodes) {
+    const constellation = byId.get(node.belongsToConstellationId);
+    const area = constellation?.title ?? "the world";
+    const shortTitle = node.title.replace(/[.?!]+$/, "").trim();
+
+    if (!node.storyUse || isGenericStoryField(node.storyUse)) {
+      node.storyUse =
+        node.whyPromising && !isGenericStoryField(node.whyPromising)
+          ? node.whyPromising
+          : `Use "${shortTitle}" to force a decision inside ${area} that the creator can build a scene around.`;
+    }
+    if (!node.possibleConflict || isGenericStoryField(node.possibleConflict)) {
+      node.possibleConflict =
+        node.risk && !isGenericStoryField(node.risk)
+          ? node.risk
+          : `Someone in ${area} wants "${shortTitle}" to stay hidden while someone else needs it exposed.`;
+    }
+    if (!node.whyItBelongsHere || isGenericStoryField(node.whyItBelongsHere)) {
+      node.whyItBelongsHere = `It advances ${area} by turning "${shortTitle}" into a pressure the creator can accept as truth.`;
+    }
+  }
+}
+
 function repairArchitecture(
   architecture: Omit<WorldArchitecture, "usedFallback" | "fallbackReason">,
   decomposition: WorldPromptDecomposition,
@@ -2540,6 +2840,11 @@ function repairArchitecture(
 
   repairArchitectureLeakage(architecture, ctx, reasoningAgents, visibleConstellations);
   syncConstellationNodeIds(visibleConstellations, architecture.startingNodes);
+
+  // Phase 9A: guarantee story-world structural coverage (characters, settings,
+  // themes, adaptive climax, canon universe) and enrich node story fields.
+  ensureStoryWorldCoverage(architecture, decomposition, seenIds);
+  enrichStartingNodeStoryFields(architecture, decomposition);
 }
 
 function normalizeNodeType(v: unknown): NodeType {
@@ -2552,77 +2857,155 @@ function normalizeSeverity(v: unknown): CriticSeverity {
   return VALID_SEVERITIES.has(s as CriticSeverity) ? (s as CriticSeverity) : "medium";
 }
 
+function normalizeConstellationCategory(v: unknown): ConstellationCategory | undefined {
+  const s = str(v, "").toLowerCase().trim();
+  if (!s) return undefined;
+  const map: Record<string, ConstellationCategory> = {
+    characters: "characters",
+    character: "characters",
+    "character depth": "characters",
+    settings: "settings",
+    setting: "settings",
+    locations: "settings",
+    location: "settings",
+    themes: "themes",
+    theme: "themes",
+    conflict: "conflict",
+    "conflict system": "conflict",
+    timeline: "timeline",
+    "timeline / eras": "timeline",
+    eras: "timeline",
+    timezones: "timeline",
+    mysteries: "mysteries",
+    mystery: "mysteries",
+    secrets: "mysteries",
+    power: "power",
+    "power structures": "power",
+    "power structure": "power",
+    climax: "climax",
+    "endgame pressure": "climax",
+    "climax / endgame pressure": "climax",
+    endgame: "climax",
+    canon: "canon",
+    "canon universe": "canon",
+    other: "other",
+  };
+  return map[s] ?? (CONSTELLATION_CATEGORIES.includes(s as ConstellationCategory) ? (s as ConstellationCategory) : undefined);
+}
+
+function normalizeCanonSensitivity(v: unknown): CanonSensitivity | undefined {
+  const s = str(v, "").toLowerCase().trim();
+  if (s === "low" || s === "medium" || s === "high") return s;
+  return undefined;
+}
+
 // ── Gemini system prompt ──────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are the World Architect inside a creative worldbuilding platform.
 
-You receive a WorldPromptDecomposition (Layer 1 output) and must design a controlled worldbuilding workspace structure.
+You receive a WorldPromptDecomposition (Layer 1 output) and must design a controlled STORY-WORLD architecture.
 
-You are NOT writing the story. You are designing the architecture for exploration.
+You are NOT writing the story. You are designing the construction areas a creator will build and explore.
+
+CORE PRINCIPLE: Do NOT produce vague idea clusters. Produce concrete STORY-WORLD CONSTRUCTION AREAS —
+areas that are concrete, story-useful, navigable, emotionally meaningful. Never generic labels, never vague
+poetic abstractions.
 
 ═══ CONCEPTS ═══
 Creative Layer — internal development area (from decomposition)
-Visible Constellation — creator-friendly exploration zone on the canvas (4-6 items)
+Visible Constellation — a story-world construction area on the canvas (6-8 items)
 Reasoning Agent — internal specialist that GENERATES ideas (linked to constellations)
 Critic Agent — internal quality-control agent (NEVER visible as constellations)
 Starting Node — concrete first explorable idea (8-15 items)
 
-═══ VISIBLE CONSTELLATIONS (4-6) ═══
-Must be creator-friendly exploration zones, NOT generic writing categories.
-Must NOT sound like backend agent names.
+═══ REQUIRED STORY-WORLD CATEGORIES ═══
+Every world should include these structural roles WHEN RELEVANT (adapt titles to the seed — do NOT reuse the
+category name as the title). Assign each constellation a "category" from:
+  characters — key personalities, wounds, desires, fears, contradictions, relationship tensions
+  settings   — important places, atmosphere, rules of place, hidden histories, symbolic locations
+  themes     — moral/emotional/philosophical tensions, recurring motifs
+  conflict   — central conflict, external opposition, internal conflict, social/systemic pressure
+  timeline   — when it happens, past events, historical wounds, future consequences, multiple timelines
+  mysteries  — hidden truth, unanswered questions, misdirection, forbidden knowledge
+  power      — institutions, family systems, governments, religions, corporations, supernatural rules
+  climax     — endgame PRESSURE (see rule below)
+  canon      — accepted truths, locked facts, consequences, evolving world state
 
-BAD: Character, Conflict, Structure, Tone, Friend Fiasco Architect Agent
-GOOD (jungle comedy): The Friend Group, The Jungle's Tricks, Survival Gone Wrong, Animal Chaos, The Final Disaster, The Heart Beneath the Chaos
+MANDATORY: always include at least one "characters", one "settings", one "themes", one "climax", and one "canon".
+Include the others when the seed supports them.
 
-Each constellation needs:
-- id (stable lowercase: constellation_friend_group)
-- title (creator-facing)
-- purpose, userFacingQuestion
-- sourceCreativeLayer (from decomposition layer name)
-- linkedReasoningAgentIds (will be filled — use placeholder IDs matching your agents)
-- suggestedStartingNodeIds (matching your nodes)
-- priority (1 = highest)
+═══ CLIMAX / ENDGAME PRESSURE RULE ═══
+The climax constellation must ALWAYS exist, but it is ADAPTIVE.
+- It contains POSSIBLE climax pressures, NOT a fixed ending.
+- It must NOT reveal the final ending too early.
+- It should represent where accepted secrets, choices, and betrayals could converge.
+- It should evolve based on accepted canon and stay connected to user-selected canon nodes.
+Horror     BAD: "Final Battle"  GOOD: "The Night the Temple Answers"
+Tech       BAD: "Ending"        GOOD: "The Leak That Breaks Trust"
+Romance    BAD: "Conclusion"    GOOD: "The Choice That Costs Both"
+
+═══ VISIBLE CONSTELLATIONS (6-8) ═══
+Each constellation MUST include:
+- id (stable lowercase: constellation_the_cave_that_rearranges)
+- name (creator-facing title — same value you may also send as "title")
+- category (one of the categories above)
+- purpose (what a creator builds here)
+- storyFunction (what this area DOES for the story: drives conflict, reveals truth, raises stakes...)
+- whyItMatters (why the creator should care emotionally/narratively)
+- startingNodes (ids of nodes that live here — match your startingNodes)
+- developmentQuestions (2-4 questions that push the area forward)
+- canonSensitivity ("low" | "medium" | "high" — how strongly accepted canon reshapes it)
+- evolutionBehavior (how it should change as canon accumulates)
+- sourceCreativeLayer, linkedReasoningAgentIds, priority (1 = highest)
+
+ANTI-VAGUE RULES (hard): Do NOT output these as titles unless attached to a concrete function:
+"Main Ideas", "World Themes", "Character Concepts", "Story Elements", "Lore", "Premise", "Exploration".
+Also forbidden: backend-sounding names (Agent, Engine, Module, System, Pipeline) and internal IDs.
+PREFER concrete titles like: "Characters Under Pressure", "The House That Remembers", "Debt of Forgotten Years",
+"The Leak That Breaks Trust", "Rituals That Demand Witnesses", "The City Below the Contract".
 
 ═══ REASONING AGENTS ═══
-World-specific internal brains. Can sound technical but must be world-specific.
-Each visible constellation must have at least one linked reasoning agent.
-Names like: Friend Dynamics Agent, Jungle Mischief Agent, Survival Failure Agent, Visual Gag Agent
-
-Each reasoning agent must have operational role, lens, and generates fields — not templated placeholders.
-BAD role/lens: "Everything through the X lens", "Concrete X scenes and beats"
-GOOD: specific generation duties tied to the agent's function (friend dynamics, jungle mischief, survival failures, etc.)
+World-specific internal brains. Each visible constellation must have at least one linked reasoning agent.
+Each agent needs operational role, lens, and generates — not templated placeholders.
+BAD role/lens: "Everything through the X lens", "Concrete X scenes and beats".
 
 ═══ CRITIC AGENTS (3-5) ═══
-Internal only. Never visible on canvas.
-Must include at least:
-- one premise guardian
-- one tone/purpose guardian
-- one anti-generic filter
-- one escalation/exploration checker
-
-Examples: Comedy Tone Guardian, Premise Guardian, Specificity Filter, Escalation Checker
+Internal only. Never visible on canvas. Include at least: a premise guardian, a tone/purpose guardian,
+an anti-generic filter, and an escalation/exploration checker.
 
 ═══ STARTING NODES (8-15) ═══
-Concrete, visual, explorable. NOT abstract words.
-BAD: Conflict, Tone, Theme, Character, node_abc_123
-GOOD: The Echoing Mimic Bird, Who Ate the Map?, The Banana Bridge Collapse
+Concrete, story-useful, explorable — NOT abstract words or IDs.
+Each node MUST include:
+- id
+- label (concrete title — same value you may also send as "title")
+- description (a concrete worldbuilding idea, NOT category text)
+- storyUse (how a creator can actually use this in the story)
+- possibleConflict (a concrete tension or conflict this can create)
+- whyItBelongsHere (why it fits its constellation)
+- belongsToConstellationId, generatedByAgentId, nodeType
+Reject generic node descriptions like "a concrete entry point into X".
 
-Each node must link to belongsToConstellationId and generatedByAgentId.
+═══ ADAPTATION ═══
+These are structural roles, NOT fixed names. Adapt every title, node, and question to the user's seed.
+Two different seeds must produce clearly different worlds.
+
+Example (seed "5 friends lost in a cave"): The Cave That Rearranges Itself, Old Accidents Beneath the Stone,
+Friendship / Guilt / Survival, The Thing That Knows Their Names, Timeline of the Missing Hours,
+The Exit That Demands a Choice, The Canon Universe.
 
 Return ONLY valid JSON:
 {
   "architectureSummary": "string",
-  "visibleConstellations": [...],
-  "reasoningAgents": [...],
-  "criticAgents": [...],
-  "startingNodes": [...],
-  "controlRules": {
-    "mustPreserve": ["string"],
-    "mustAvoid": ["string"],
-    "generationPriorities": ["string"],
-    "rankingCriteria": ["string"],
-    "expansionRules": ["string"]
-  }
+  "visibleConstellations": [{
+    "id","name","category","purpose","storyFunction","whyItMatters",
+    "startingNodes":["node_id"],"developmentQuestions":["string"],
+    "canonSensitivity","evolutionBehavior","sourceCreativeLayer",
+    "linkedReasoningAgentIds":["agent_id"],"priority":1
+  }],
+  "reasoningAgents":[{"id","name","role","lens","generates":["string"],"linkedConstellationIds":["id"],"activationTriggers":["string"]}],
+  "criticAgents":[{"id","name","job","checks":["string"],"rejectsIf":["string"],"repairsBy":["string"],"severity":"medium"}],
+  "startingNodes":[{"id","label","description","storyUse","possibleConflict","whyItBelongsHere","belongsToConstellationId","generatedByAgentId","nodeType"}],
+  "controlRules":{"mustPreserve":["string"],"mustAvoid":["string"],"generationPriorities":["string"],"rankingCriteria":["string"],"expansionRules":["string"]}
 }`;
 
 // ── Decomposition-based fallback ────────────────────────────────────────────────
@@ -2843,7 +3226,7 @@ function normalizeArchitecture(
 
   let visibleConstellations: VisibleConstellation[] = constRaw.slice(0, 8).map((c, i) => {
     const r = c as Record<string, unknown>;
-    const rawTitle = str(r["title"], `Zone ${i + 1}`);
+    const rawTitle = str(r["title"] ?? r["name"], `Zone ${i + 1}`);
     const layerName = str(r["sourceCreativeLayer"] ?? r["source_creative_layer"]);
     const title = repairVisibleConstellationTitle(
       isGenericConstellationTitle(repairConstellationTitle(rawTitle, prompt, layerName))
@@ -2856,19 +3239,25 @@ function normalizeArchitecture(
     return {
       id,
       title,
-      purpose: str(r["purpose"]),
+      purpose: str(r["purpose"] ?? r["storyFunction"] ?? r["story_function"]),
       userFacingQuestion: str(r["userFacingQuestion"] ?? r["user_facing_question"]),
       sourceCreativeLayer: layerName || decomposition.requiredCreativeLayers[i]?.name || title,
       linkedReasoningAgentIds: strArray(r["linkedReasoningAgentIds"] ?? r["linked_reasoning_agent_ids"], 6),
       suggestedStartingNodeIds: strArray(r["suggestedStartingNodeIds"] ?? r["suggested_starting_node_ids"], 20),
       priority: typeof r["priority"] === "number" ? r["priority"] : i + 1,
+      category: normalizeConstellationCategory(r["category"]),
+      storyFunction: str(r["storyFunction"] ?? r["story_function"]),
+      whyItMatters: str(r["whyItMatters"] ?? r["why_it_matters"]),
+      developmentQuestions: strArray(r["developmentQuestions"] ?? r["development_questions"], 5),
+      canonSensitivity: normalizeCanonSensitivity(r["canonSensitivity"] ?? r["canon_sensitivity"]),
+      evolutionBehavior: str(r["evolutionBehavior"] ?? r["evolution_behavior"]),
     };
   });
 
-  // Trim to 4-6, keep strongest by priority
+  // Trim to 4-8 (Phase 9A needs room for climax + canon roles), keep strongest by priority
   visibleConstellations.sort((a, b) => a.priority - b.priority);
-  if (visibleConstellations.length > 6) {
-    visibleConstellations = visibleConstellations.slice(0, 6);
+  if (visibleConstellations.length > 8) {
+    visibleConstellations = visibleConstellations.slice(0, 8);
   }
 
   const nodesRaw = obj["startingNodes"] ?? obj["starting_nodes"] ?? obj["nodes"];
@@ -2876,21 +3265,26 @@ function normalizeArchitecture(
 
   let startingNodes: StartingNode[] = nodesRaw.slice(0, 20).map((n, i) => {
     const r = n as Record<string, unknown>;
-    let title = str(r["title"], "");
+    let title = str(r["title"] ?? r["label"], "");
     if (!title || isGenericNodeTitle(title) || isPlaceholderNodeTitle(title)) {
       title = repairNodeTitle(title, prompt, i);
     }
     const id = toStableId("node", str(r["id"], title), seenIds);
+    const storyUse = str(r["storyUse"] ?? r["story_use"]);
+    const possibleConflict = str(r["possibleConflict"] ?? r["possible_conflict"]);
     return {
       id,
       title,
       description: str(r["description"]),
       belongsToConstellationId: str(r["belongsToConstellationId"] ?? r["belongs_to_constellation_id"]),
       generatedByAgentId: str(r["generatedByAgentId"] ?? r["generated_by_agent_id"]),
-      whyPromising: str(r["whyPromising"] ?? r["why_promising"]),
-      risk: str(r["risk"]),
+      whyPromising: str(r["whyPromising"] ?? r["why_promising"]) || storyUse,
+      risk: str(r["risk"]) || possibleConflict,
       explorationQuestions: strArray(r["explorationQuestions"] ?? r["exploration_questions"], 5),
       nodeType: normalizeNodeType(r["nodeType"] ?? r["node_type"]),
+      storyUse,
+      possibleConflict,
+      whyItBelongsHere: str(r["whyItBelongsHere"] ?? r["why_it_belongs_here"]),
     };
   });
 

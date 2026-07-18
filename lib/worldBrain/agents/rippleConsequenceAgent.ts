@@ -1,24 +1,9 @@
 /**
- * RippleConsequenceAgent — GAME pattern wrapper (Phase 8C).
+ * RippleConsequenceAgent — GAME pattern wrapper (Phase 8C + 8D latency controls).
  *
- * Wraps the existing Ripple Effect LLM call in a typed, validated,
- * retry-aware agent contract. The route continues to work unchanged
- * because it unpacks AgentRunResult into the existing response shape.
- *
- * G — Goal: determine what logically changes when a node is established as truth,
- *           while preserving canon and avoiding random expansion.
- * A — Actions: inspect_trigger_decision, inspect_canon_state, inspect_canvas_neighborhood,
- *              inspect_recent_decisions, identify_affected_constellations,
- *              propose_consequence_operations, preserve_existing_canon,
- *              detect_contradictions, summarize_world_change, return_fallback
- * M — Memory: explicit AgentMemoryPacket (world seed, canon, rejected, steering, decisions)
- * E — Environment: canvas snapshot, nav mode, apply lock, canon lock
- *
- * Forbidden:
- *   mutate_canvas | directly_apply_patches | remove_accepted_canon |
- *   overwrite_user_truth | generate_unrelated_new_areas |
- *   produce_consequences_without_source_rationale |
- *   expose_internal_operation_language_to_user
+ * Phase 8D adds: timing logs, compact neighborhood prompts, hard timeouts,
+ * deterministic repair (trim/downgrade/scrub) before retry, and skip-retry
+ * when enough valid operations remain after repair.
  */
 
 import crypto from "node:crypto";
@@ -37,6 +22,18 @@ import {
   validateRippleConsequenceAgentOutput,
   type RippleConsequenceValidationContext,
 } from "./rippleConsequenceValidation";
+import { buildCompactRippleContext } from "./compactAgentContext";
+import {
+  estimateTokenCount,
+  elapsedMs,
+  isAgentFastMode,
+  isAgentTimeoutError,
+  logAgentTiming,
+  nowMs,
+  resolveRippleTimeoutMs,
+  RIPPLE_MIN_OPS_TO_SKIP_RETRY,
+  withTimeout,
+} from "./agentLatency";
 import { buildRippleEffectPrompt } from "../rippleEffectPrompt";
 import { buildRippleEffectInput } from "../buildRippleEffectPlan";
 import { parseRippleEffectOutput } from "../parseRippleEffectOutput";
@@ -70,7 +67,6 @@ export const RIPPLE_AGENT_NO_KEY_COPY =
 
 // ─── Payload type ──────────────────────────────────────────────────────────────
 
-/** Agent-specific payload (goes into AgentRunInput.payload). */
 export type RippleConsequenceAgentPayload = {
   triggerEvent: UserDecisionEvent;
   decisionLog: DecisionEventLog;
@@ -81,7 +77,7 @@ export type RippleConsequenceAgentPayload = {
   evaluationMode?: RippleEvaluationMode;
 };
 
-// ─── Memory builder ────────────────────────────────────────────────────────────
+// ─── Memory / environment builders ─────────────────────────────────────────────
 
 export function buildRippleConsequenceMemory(opts: {
   worldSeed: string;
@@ -105,8 +101,6 @@ export function buildRippleConsequenceMemory(opts: {
   };
 }
 
-// ─── Environment builder ───────────────────────────────────────────────────────
-
 export function buildRippleConsequenceEnvironment(opts: {
   navMode: AgentEnvironmentSnapshot["navMode"];
   evolutionApplyInProgress: boolean;
@@ -126,14 +120,78 @@ export function buildRippleConsequenceEnvironment(opts: {
   };
 }
 
-// ─── Environment guard ─────────────────────────────────────────────────────────
-
 function checkEnvironmentGuard(
   env: AgentEnvironmentSnapshot,
 ): AgentStopReason | null {
-  // Ripple can run in discovery or constellation mode — unlike Node Reasoner
   if (env.evolutionApplyInProgress) return "environment_guard_tripped";
   return null;
+}
+
+// ─── Deterministic repair + retry policy ───────────────────────────────────────
+
+const BACKEND_TERM_SCRUBS: Array<[RegExp, string]> = [
+  [/\bthis operation\b/gi, "this change"],
+  [/\boperation\b/gi, "change"],
+  [/\bapply plan\b/gi, "suggested changes"],
+  [/\bdry[\s-]?run\b/gi, "review"],
+  [/\bpatch\b/gi, "update"],
+  [/\bblocker\b/gi, "conflict"],
+  [/\bvalidation\b/gi, "check"],
+];
+
+/** Scrub backend jargon from creator-facing copy. Exported for tests. */
+export function scrubBackendTerms(text: string): string {
+  let out = text;
+  for (const [pattern, replacement] of BACKEND_TERM_SCRUBS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
+/**
+ * Apply deterministic repairs that avoid a second LLM call when possible:
+ * - downgrade unsafe canon removals
+ * - trim to top 3–5 operations
+ * - ensure / scrub user-facing copy
+ */
+export function repairRippleOutputDeterministically(
+  output: RippleEffectOutput,
+  truthCanonIds: string[],
+): RippleEffectOutput {
+  const { patchedOutput } = downgradeCanonRemovalOperations(output, truthCanonIds);
+  const trimmed = trimOperationsToRecommendedMax(patchedOutput);
+  return ensureUserFacingCopy(trimmed);
+}
+
+/**
+ * Retry only on hard failures that deterministic repair cannot fix.
+ */
+export function shouldRetryRippleConsequence(opts: {
+  validationValid: boolean;
+  operationCount: number;
+  hasHardErrorsAfterRepair: boolean;
+  timedOut: boolean;
+  fastMode: boolean;
+  onlySoftOrRepairableErrors: boolean;
+}): boolean {
+  if (opts.timedOut) return false;
+  if (opts.validationValid) return false;
+  if (opts.fastMode && opts.operationCount >= RIPPLE_MIN_OPS_TO_SKIP_RETRY) return false;
+  if (!opts.hasHardErrorsAfterRepair) return false;
+  if (opts.onlySoftOrRepairableErrors && opts.operationCount >= RIPPLE_MIN_OPS_TO_SKIP_RETRY) {
+    return false;
+  }
+  return opts.hasHardErrorsAfterRepair;
+}
+
+function isRepairableOrSoftError(field: string): boolean {
+  return (
+    field === "suggestedOperations" ||
+    field === "userFacingSummary" ||
+    field.startsWith("userFacingBullets") ||
+    field === "preservedElements" ||
+    field === "summary"
+  );
 }
 
 // ─── LLM attempt ──────────────────────────────────────────────────────────────
@@ -141,7 +199,17 @@ function checkEnvironmentGuard(
 async function runOneRippleLLMAttempt(
   input: RippleEffectInput,
   retryAddendum: string,
-): Promise<RippleEffectOutput> {
+  signal?: AbortSignal,
+): Promise<{
+  output: RippleEffectOutput;
+  promptBuildMs: number;
+  promptChars: number;
+  estimatedTokens: number;
+  llmMs: number;
+  parseMs: number;
+  compactNodeCount: number;
+  compactConstellationCount: number;
+}> {
   const resolvedInput = buildRippleEffectInput({
     triggerEvent: input.triggerEvent,
     decisionLog: input.decisionLog,
@@ -152,30 +220,50 @@ async function runOneRippleLLMAttempt(
     evaluationMode: input.evaluationMode,
   });
 
-  const basePrompt = buildRippleEffectPrompt(resolvedInput);
-  const prompt = retryAddendum ? `${basePrompt}\n\n${retryAddendum}` : basePrompt;
+  const { input: compactInput, stats } = buildCompactRippleContext(resolvedInput);
 
+  const promptBuildStart = nowMs();
+  const basePrompt = buildRippleEffectPrompt(compactInput);
+  const prompt = retryAddendum ? `${basePrompt}\n\n${retryAddendum}` : basePrompt;
+  const promptBuildMs = elapsedMs(promptBuildStart);
+  const promptChars = prompt.length;
+  const estimatedTokens = estimateTokenCount(prompt);
+
+  const llmStart = nowMs();
   const llmResult = await generateJsonWithLLMFallback({
     provider: resolveDefaultLLMProvider(),
     model: resolveGeminiModel(),
     prompt,
     temperature: 0.4,
     responseMimeType: "application/json",
+    signal,
   });
+  const llmMs = elapsedMs(llmStart);
 
+  const parseStart = nowMs();
   const parseResult = parseRippleEffectOutput(llmResult.text, {
     fallbackTriggerEventId: input.triggerEvent.id,
   });
+  const parseMs = elapsedMs(parseStart);
 
   if (!parseResult.success || !parseResult.output) {
     const errSummary = parseResult.errors.slice(0, 2).join("; ");
     throw new Error(`Parse/validate failed (${llmResult.provider}/${llmResult.model}): ${errSummary}`);
   }
 
-  return parseResult.output;
+  return {
+    output: parseResult.output,
+    promptBuildMs,
+    promptChars,
+    estimatedTokens,
+    llmMs,
+    parseMs,
+    compactNodeCount: stats.nodeCount,
+    compactConstellationCount: stats.constellationCount,
+  };
 }
 
-// ─── Failure builder ───────────────────────────────────────────────────────────
+// ─── Failure / copy helpers ────────────────────────────────────────────────────
 
 function buildFailure(
   category: AgentFailureMode["category"],
@@ -187,26 +275,18 @@ function buildFailure(
   return { category, userMessage, internalDetail, retryable, recoveryHint };
 }
 
-// ─── Post-processing: inject userFacingSummary if missing ─────────────────────
-
 function ensureUserFacingCopy(output: RippleEffectOutput): RippleEffectOutput {
   const hasUFS = output.userFacingSummary && output.userFacingSummary.trim().length >= 20;
   const hasUFB = Array.isArray(output.userFacingBullets) && output.userFacingBullets.length > 0;
 
-  if (hasUFS && hasUFB) return output;
-
-  // Generate minimal fallback copy from existing data
-  const summary = hasUFS
+  let summary = hasUFS
     ? output.userFacingSummary!
-    : output.summary
-      .replace(/\boperation\b/gi, "change")
-      .replace(/\bpatch\b/gi, "update")
-      .replace(/\bblocker\b/gi, "conflict")
-      .replace(/\bdry[\s-]run\b/gi, "review")
-      .replace(/\bvalidation\b/gi, "check");
+    : output.summary || RIPPLE_AGENT_FALLBACK_COPY;
+
+  summary = scrubBackendTerms(summary);
 
   const bullets: string[] = hasUFB
-    ? output.userFacingBullets!
+    ? output.userFacingBullets!.map(scrubBackendTerms)
     : output.suggestedOperations
         .slice(0, 4)
         .map((op) => {
@@ -214,10 +294,7 @@ function ensureUserFacingCopy(output: RippleEffectOutput): RippleEffectOutput {
           const target = op.payload?.["proposedTitle"]
             ? String(op.payload["proposedTitle"])
             : op.target.id;
-          const cleanReason = (op.reason || "")
-            .replace(/\boperation\b/gi, "change")
-            .replace(/\bpatch\b/gi, "update")
-            .slice(0, 120);
+          const cleanReason = scrubBackendTerms(op.reason || "").slice(0, 120);
           return `${verb} ${target}.${cleanReason ? ` ${cleanReason}` : ""}`.trim();
         })
         .filter(Boolean);
@@ -239,32 +316,78 @@ function operationVerb(opType: string): string {
   }
 }
 
+function fallbackResult(
+  runId: string,
+  attemptNumber: number,
+  stopReason: AgentStopReason | null,
+  failure: AgentFailureMode,
+): AgentRunResult<RippleEffectOutput> {
+  return {
+    agentId: "RippleConsequenceAgent",
+    runId,
+    status: "fallback",
+    output: null,
+    validation: { valid: false, issues: [], summary: failure.internalDetail },
+    failure,
+    stopReason,
+    completedAt: new Date().toISOString(),
+    attemptNumber,
+    userFacingFallbackCopy: RIPPLE_AGENT_FALLBACK_COPY,
+  };
+}
+
 // ─── Main agent runner ─────────────────────────────────────────────────────────
 
-/**
- * Run the RippleConsequenceAgent under the GAME contract.
- *
- * 1. Check environment guard.
- * 2. Attempt #1 — LLM call + parse/normalize.
- * 3. Downgrade unsafe canon removals automatically (non-blocking).
- * 4. Validate output against AgentValidationResult.
- * 5. If validation fails, attempt #2 with retry instructions.
- * 6. After #2, trim to recommendedMax if still over limit.
- * 7. If no valid output, return fallback.
- */
 export async function runRippleConsequenceAgent(
   agentInput: AgentRunInput<RippleConsequenceAgentPayload>,
 ): Promise<AgentRunResult<RippleEffectOutput>> {
   const { payload, memory, environment, runId } = agentInput;
+  const routeStart = nowMs();
+  const fastMode = isAgentFastMode();
+  const hardTimeoutMs = resolveRippleTimeoutMs();
+  const abortController = new AbortController();
+
+  let retryUsed = false;
+  let promptChars = 0;
+  let estimatedTokens = 0;
+  let promptBuildMs = 0;
+  let llmMs = 0;
+  let parseMs = 0;
+  let validationMs = 0;
+  let attemptNumber = 0;
+  let compactNodeCount = 0;
+  let compactConstellationCount = 0;
 
   const validationCtx: RippleConsequenceValidationContext = {
     truthCanonIds: memory.acceptedCanonIds,
     triggerEventId: payload.triggerEvent.id,
   };
 
-  // ── E: Environment guard ────────────────────────────────────────────────────
+  const logTiming = (extra: Record<string, string | number | boolean | null | undefined>) => {
+    logAgentTiming("[ripple-effect:timing]", {
+      requestId: runId,
+      triggerDecisionId: payload.triggerEvent.id,
+      triggerNodeTitle:
+        payload.triggerEvent.target.displayTitle || payload.triggerEvent.target.title,
+      promptBuildMs,
+      promptChars,
+      estimatedTokens,
+      llmMs,
+      parseMs,
+      validationMs,
+      retryUsed,
+      totalRouteMs: elapsedMs(routeStart),
+      fastMode,
+      hardTimeoutMs,
+      compactNodeCount,
+      compactConstellationCount,
+      ...extra,
+    });
+  };
+
   const guardStop = checkEnvironmentGuard(environment);
   if (guardStop) {
+    logTiming({ agentStatus: "failed", operationCount: 0, stopReason: guardStop });
     return {
       agentId: "RippleConsequenceAgent",
       runId,
@@ -285,8 +408,8 @@ export async function runRippleConsequenceAgent(
     };
   }
 
-  // ── Verify LLM keys ────────────────────────────────────────────────────────
   if (!hasGeminiApiKey() && !hasOpenRouterApiKey()) {
+    logTiming({ agentStatus: "failed", operationCount: 0 });
     return {
       agentId: "RippleConsequenceAgent",
       runId,
@@ -317,35 +440,66 @@ export async function runRippleConsequenceAgent(
     evaluationMode: payload.evaluationMode,
   };
 
+  const runAttempt = (retryAddendum: string) =>
+    withTimeout(
+      runOneRippleLLMAttempt(rippleInput, retryAddendum, abortController.signal),
+      Math.max(1_000, hardTimeoutMs - elapsedMs(routeStart)),
+      "RippleConsequenceAgent",
+      abortController,
+    );
+
   // ── Attempt 1 ────────────────────────────────────────────────────────────────
   let attempt1Output: RippleEffectOutput | null = null;
   let attempt1Error: string | null = null;
 
   try {
-    attempt1Output = await runOneRippleLLMAttempt(rippleInput, "");
+    attemptNumber = 1;
+    const attempt1 = await runAttempt("");
+    attempt1Output = attempt1.output;
+    promptBuildMs = attempt1.promptBuildMs;
+    promptChars = attempt1.promptChars;
+    estimatedTokens = attempt1.estimatedTokens;
+    llmMs = attempt1.llmMs;
+    parseMs = attempt1.parseMs;
+    compactNodeCount = attempt1.compactNodeCount;
+    compactConstellationCount = attempt1.compactConstellationCount;
   } catch (e) {
+    if (isAgentTimeoutError(e)) {
+      logTiming({ agentStatus: "fallback", operationCount: 0, timedOut: true });
+      return fallbackResult(
+        runId,
+        1,
+        "timeout",
+        buildFailure("timeout", e.message, RIPPLE_AGENT_FALLBACK_COPY, false),
+      );
+    }
     attempt1Error = e instanceof Error ? e.message : String(e);
   }
 
   if (attempt1Output) {
-    // Auto-downgrade unsafe canon removals before validation
-    const { patchedOutput: patchedAttempt1, downgradedIds: dg1 } =
-      downgradeCanonRemovalOperations(attempt1Output, validationCtx.truthCanonIds);
-    if (dg1.length > 0) {
-      console.info("[ripple-consequence-agent] Auto-downgraded canon removal ops:", dg1.join(", "));
-    }
-
-    // Ensure user-facing copy
-    const withUFS1 = ensureUserFacingCopy(patchedAttempt1);
-
-    const validation1 = validateRippleConsequenceAgentOutput(withUFS1, rippleInput, validationCtx);
+    const validationStart = nowMs();
+    const repaired1 = repairRippleOutputDeterministically(
+      attempt1Output,
+      validationCtx.truthCanonIds,
+    );
+    const validation1 = validateRippleConsequenceAgentOutput(
+      repaired1,
+      rippleInput,
+      validationCtx,
+    );
+    validationMs = elapsedMs(validationStart);
 
     if (validation1.valid) {
+      logTiming({
+        agentStatus: "success",
+        operationCount: repaired1.suggestedOperations.length,
+        attemptNumber: 1,
+      });
       return {
         agentId: "RippleConsequenceAgent",
         runId,
         status: "success",
-        output: withUFS1,
+        output: repaired1,
         validation: validation1,
         failure: null,
         stopReason: null,
@@ -355,64 +509,172 @@ export async function runRippleConsequenceAgent(
       };
     }
 
-    // Build retry instructions for attempt 2
+    const hardErrors = validation1.issues.filter((i) => i.severity === "error");
+    const onlySoftOrRepairable =
+      hardErrors.length === 0 ||
+      hardErrors.every((e) => isRepairableOrSoftError(e.field));
+    const opCount = repaired1.suggestedOperations.length;
+
+    const needsRetry = shouldRetryRippleConsequence({
+      validationValid: false,
+      operationCount: opCount,
+      hasHardErrorsAfterRepair: hardErrors.length > 0 && !onlySoftOrRepairable,
+      timedOut: false,
+      fastMode,
+      onlySoftOrRepairableErrors: onlySoftOrRepairable,
+    });
+
+    // Accept repaired output when we have usable ops and no non-repairable hard errors
+    if (!needsRetry && opCount >= RIPPLE_MIN_OPS_TO_SKIP_RETRY) {
+      logTiming({
+        agentStatus: "success",
+        operationCount: opCount,
+        attemptNumber: 1,
+        skippedRetry: true,
+      });
+      return {
+        agentId: "RippleConsequenceAgent",
+        runId,
+        status: "success",
+        output: repaired1,
+        validation: validation1,
+        failure: null,
+        stopReason: null,
+        completedAt: new Date().toISOString(),
+        attemptNumber: 1,
+        userFacingFallbackCopy: RIPPLE_AGENT_FALLBACK_COPY,
+      };
+    }
+
+    if (!needsRetry) {
+      logTiming({ agentStatus: "fallback", operationCount: 0, skippedRetry: true });
+      return fallbackResult(
+        runId,
+        1,
+        "validation_hard_failure",
+        buildFailure("validation_error", validation1.summary),
+      );
+    }
+
+    // ── Attempt 2 ──────────────────────────────────────────────────────────────
+    retryUsed = true;
+    const remainingMs = hardTimeoutMs - elapsedMs(routeStart);
+    if (remainingMs < 5_000) {
+      if (opCount > 0) {
+        logTiming({
+          agentStatus: "retry",
+          operationCount: opCount,
+          skippedRetry: true,
+          reason: "insufficient_timeout_budget",
+        });
+        return {
+          agentId: "RippleConsequenceAgent",
+          runId,
+          status: "retry",
+          output: repaired1,
+          validation: validation1,
+          failure: buildFailure(
+            "validation_error",
+            `Skipped retry due to timeout budget. ${validation1.summary}`,
+          ),
+          stopReason: null,
+          completedAt: new Date().toISOString(),
+          attemptNumber: 1,
+          userFacingFallbackCopy: RIPPLE_AGENT_FALLBACK_COPY,
+        };
+      }
+      logTiming({ agentStatus: "fallback", operationCount: 0, timedOut: true });
+      return fallbackResult(
+        runId,
+        1,
+        "timeout",
+        buildFailure("timeout", "Insufficient time remaining for retry", RIPPLE_AGENT_FALLBACK_COPY, false),
+      );
+    }
+
     const retryAddendum = buildRippleRetryInstructions(
       validation1,
       validationCtx.truthCanonIds,
     );
 
-    // ── Attempt 2 ──────────────────────────────────────────────────────────────
     let attempt2Output: RippleEffectOutput | null = null;
     let attempt2Error: string | null = null;
 
     try {
-      attempt2Output = await runOneRippleLLMAttempt(rippleInput, retryAddendum);
+      attemptNumber = 2;
+      const attempt2 = await runAttempt(retryAddendum);
+      attempt2Output = attempt2.output;
+      promptBuildMs += attempt2.promptBuildMs;
+      promptChars = Math.max(promptChars, attempt2.promptChars);
+      estimatedTokens = Math.max(estimatedTokens, attempt2.estimatedTokens);
+      llmMs += attempt2.llmMs;
+      parseMs += attempt2.parseMs;
     } catch (e) {
+      if (isAgentTimeoutError(e)) {
+        if (opCount > 0) {
+          logTiming({
+            agentStatus: "retry",
+            operationCount: opCount,
+            timedOut: true,
+            attemptNumber: 2,
+          });
+          return {
+            agentId: "RippleConsequenceAgent",
+            runId,
+            status: "retry",
+            output: repaired1,
+            validation: validation1,
+            failure: buildFailure("timeout", e.message),
+            stopReason: "timeout",
+            completedAt: new Date().toISOString(),
+            attemptNumber: 2,
+            userFacingFallbackCopy: RIPPLE_AGENT_FALLBACK_COPY,
+          };
+        }
+        logTiming({ agentStatus: "fallback", operationCount: 0, timedOut: true });
+        return fallbackResult(
+          runId,
+          2,
+          "timeout",
+          buildFailure("timeout", e.message, RIPPLE_AGENT_FALLBACK_COPY, false),
+        );
+      }
       attempt2Error = e instanceof Error ? e.message : String(e);
     }
 
     if (attempt2Output) {
-      const { patchedOutput: patchedAttempt2 } =
-        downgradeCanonRemovalOperations(attempt2Output, validationCtx.truthCanonIds);
+      const validation2Start = nowMs();
+      const repaired2 = repairRippleOutputDeterministically(
+        attempt2Output,
+        validationCtx.truthCanonIds,
+      );
+      const validation2 = validateRippleConsequenceAgentOutput(
+        repaired2,
+        rippleInput,
+        validationCtx,
+      );
+      validationMs += elapsedMs(validation2Start);
 
-      // Trim to recommended max if still over
-      const trimmedAttempt2 = trimOperationsToRecommendedMax(patchedAttempt2);
-      const withUFS2 = ensureUserFacingCopy(trimmedAttempt2);
-
-      const validation2 = validateRippleConsequenceAgentOutput(withUFS2, rippleInput, validationCtx);
-
-      if (validation2.valid) {
-        return {
-          agentId: "RippleConsequenceAgent",
-          runId,
-          status: "success",
-          output: withUFS2,
-          validation: validation2,
-          failure: null,
-          stopReason: null,
-          completedAt: new Date().toISOString(),
+      if (validation2.valid || repaired2.suggestedOperations.length > 0) {
+        logTiming({
+          agentStatus: validation2.valid ? "success" : "retry",
+          operationCount: repaired2.suggestedOperations.length,
           attemptNumber: 2,
-          userFacingFallbackCopy: RIPPLE_AGENT_FALLBACK_COPY,
-        };
-      }
-
-      // Attempt 2 still invalid — use trimmed output as partial result
-      // (Better than fallback if there are any usable operations)
-      const hasAnyOperations = withUFS2.suggestedOperations.length > 0;
-      if (hasAnyOperations) {
+        });
         return {
           agentId: "RippleConsequenceAgent",
           runId,
-          status: "retry",
-          output: withUFS2,
+          status: validation2.valid ? "success" : "retry",
+          output: repaired2,
           validation: validation2,
-          failure: buildFailure(
-            "validation_error",
-            `Attempt 2 partial: ${validation2.summary}`,
-            RIPPLE_AGENT_FALLBACK_COPY,
-            false,
-            "Partial output used. Review suggested operations manually.",
-          ),
+          failure: validation2.valid
+            ? null
+            : buildFailure(
+                "validation_error",
+                `Attempt 2 partial: ${validation2.summary}`,
+                RIPPLE_AGENT_FALLBACK_COPY,
+                false,
+              ),
           stopReason: null,
           completedAt: new Date().toISOString(),
           attemptNumber: 2,
@@ -421,19 +683,21 @@ export async function runRippleConsequenceAgent(
       }
     }
 
-    // Attempt 2 threw or produced empty output — fall back to trimmed attempt 1
-    const trimmedAttempt1 = trimOperationsToRecommendedMax(withUFS1);
-    if (trimmedAttempt1.suggestedOperations.length > 0) {
-      const revalidation = validateRippleConsequenceAgentOutput(trimmedAttempt1, rippleInput, validationCtx);
+    if (opCount > 0) {
+      logTiming({
+        agentStatus: "retry",
+        operationCount: opCount,
+        attemptNumber: 2,
+      });
       return {
         agentId: "RippleConsequenceAgent",
         runId,
         status: "retry",
-        output: trimmedAttempt1,
-        validation: revalidation,
+        output: repaired1,
+        validation: validation1,
         failure: buildFailure(
           attempt2Error?.includes("Parse") ? "parse_error" : "llm_error",
-          `Attempt 2 failed: ${attempt2Error ?? "null output"}. Using trimmed attempt 1.`,
+          `Attempt 2 failed: ${attempt2Error ?? "null output"}. Using repaired attempt 1.`,
         ),
         stopReason: null,
         completedAt: new Date().toISOString(),
@@ -443,28 +707,19 @@ export async function runRippleConsequenceAgent(
     }
   }
 
-  // Both attempts failed entirely
-  return {
-    agentId: "RippleConsequenceAgent",
+  logTiming({ agentStatus: "fallback", operationCount: 0, attemptNumber });
+  return fallbackResult(
     runId,
-    status: "fallback",
-    output: null,
-    validation: { valid: false, issues: [], summary: "All attempts failed or produced null output." },
-    failure: buildFailure(
+    Math.max(attemptNumber, 1),
+    "max_retries_exceeded",
+    buildFailure(
       attempt1Error?.includes("Parse") ? "parse_error" : "llm_error",
       attempt1Error ?? "Attempt 1 produced null output",
       RIPPLE_AGENT_FALLBACK_COPY,
       false,
-      "Check LLM provider configuration and try again.",
     ),
-    stopReason: "max_retries_exceeded",
-    completedAt: new Date().toISOString(),
-    attemptNumber: 2,
-    userFacingFallbackCopy: RIPPLE_AGENT_FALLBACK_COPY,
-  };
+  );
 }
-
-// ─── Convenience builders ──────────────────────────────────────────────────────
 
 export function buildRippleConsequenceAgentInput(
   payload: RippleConsequenceAgentPayload,

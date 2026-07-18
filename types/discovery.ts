@@ -36,6 +36,19 @@ export type AiDiscovery = Discovery & {
   risk?: string;
   explorationQuestions?: string[];
   nodeType?: string;
+  /** Phase 9A story fields */
+  storyUse?: string;
+  possibleConflict?: string;
+  whyItBelongsHere?: string;
+  /** Phase 9B — canon-driven evolution (visible in the detail panel) */
+  consequenceNote?: string;
+  influencedByCanonIds?: string[];
+  evolutionState?: "strengthened" | "weakened" | "reframed";
+  /** Phase 9B — constellation-level fields (when the selection is a constellation) */
+  categoryLabel?: string;
+  pressureNote?: string;
+  canonSensitivity?: "low" | "medium" | "high";
+  evolutionBehavior?: string;
 };
 
 export type PanelItem =

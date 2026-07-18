@@ -28,7 +28,7 @@ export function buildPendingWorldChangeCardModel(): WorldChangeCardModel {
   return {
     phase: "pending",
     title: "Added to Canon",
-    subtitle: "Thinking through world changes…",
+    subtitle: "Truth added. Checking what changes…",
     summary:
       "Your choice is now true in this world. We're tracing what shifts, unlocks, or comes under pressure because of it.",
     affectedAreas: [],
@@ -44,7 +44,7 @@ export function buildFailedWorldChangeCardModel(): WorldChangeCardModel {
     title: "Added to Canon",
     subtitle: "Your truth is saved",
     summary:
-      "This truth has been added. The world needs more context before it changes.",
+      "This truth has been added. The world needs a little more context before it changes.",
     affectedAreas: [],
     consequences: [],
     isEmpty: true,

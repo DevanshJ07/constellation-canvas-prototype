@@ -222,6 +222,21 @@ export function mapCanvasStateToGalaxyScene(input: MapGalaxySceneInput): GalaxyS
     (b) => !hiddenIds.has(b.id) && decisions[b.id] !== "rejected",
   );
 
+  // Safety net: if aiBranches are empty for this constellation, fall back to architecture nodes.
+  const aiFutureIds = new Set(aiFutures.map((b) => b.id));
+  const knownPrimaryIds = new Set([...dirIds, ...consIds, ...aiFutureIds]);
+  const architectureFallbackNodes =
+    aiFutures.length === 0
+      ? (input.architectureCanvasModel?.nodes.filter(
+          (n) =>
+            n.constellationId === centerId &&
+            !knownPrimaryIds.has(n.id) &&
+            !hiddenIds.has(n.id) &&
+            decisions[n.id] !== "rejected" &&
+            !trail.includes(n.id),
+        ) ?? [])
+      : [];
+
   type FutureEntry =
     | { id: string; ai: false; branch: null }
     | { id: string; ai: true; branch: AiGeneratedBranch };
@@ -230,25 +245,81 @@ export function mapCanvasStateToGalaxyScene(input: MapGalaxySceneInput): GalaxyS
     ...dirIds.map((id) => ({ id, ai: false as const, branch: null })),
     ...consIds.map((id) => ({ id, ai: false as const, branch: null })),
     ...aiFutures.map((b) => ({ id: b.id, ai: true as const, branch: b })),
+    ...architectureFallbackNodes.map((n) => ({
+      id: n.id,
+      ai: false as const,
+      branch: null,
+    })),
   ];
 
-  const primaryNodes: GalaxyOrbitNode[] = futureEntries.map((entry) => ({
-    id: entry.id,
-    title: resolvePrimaryTitle(entry.id, entry.branch, input),
-    decision: mapDecision(entry.id, decisions, hiddenIds, weakenedIds),
-  }));
+  const primaryNodes: GalaxyOrbitNode[] = futureEntries.map((entry) => {
+    if (entry.ai) {
+      return {
+        id: entry.id,
+        title: resolvePrimaryTitle(entry.id, entry.branch, input),
+        decision: mapDecision(entry.id, decisions, hiddenIds, weakenedIds),
+      };
+    }
+    const archNode = input.architectureCanvasModel?.nodes.find((n) => n.id === entry.id);
+    return {
+      id: entry.id,
+      title: resolvePrimaryTitle(entry.id, null, {
+        ...input,
+        nodeOverrides: {
+          ...input.nodeOverrides,
+          ...(archNode && !input.nodeOverrides[entry.id]
+            ? { [entry.id]: { title: archNode.title } }
+            : {}),
+        },
+      }),
+      decision: mapDecision(entry.id, decisions, hiddenIds, weakenedIds),
+    };
+  });
 
   const primaryIds = new Set(primaryNodes.map((n) => n.id));
-  const moonParentId = resolveMoonParentId(
+  let moonParentId = resolveMoonParentId(
     centerId,
     primaryIds,
     selectedNodeId,
     nodeReasonerBranchesByParentId,
   );
 
+  // Nested Explore Deeper: moon parent may itself be a prior moon (not on primary ring).
+  // Promote it so GalaxyOrbitalScene can anchor child moons and keep the parent visible.
+  if (
+    moonParentId &&
+    moonParentId !== centerId &&
+    !primaryIds.has(moonParentId)
+  ) {
+    const nrBranch = Object.values(nodeReasonerBranchesByParentId)
+      .flat()
+      .find((b) => b.id === moonParentId);
+    const nrMeta = input.nodeReasonerPanelMeta[moonParentId];
+    primaryNodes.push({
+      id: moonParentId,
+      title: nrBranch
+        ? resolveMoonTitle(nrBranch, input)
+        : labelTitle(
+            nrMeta?.displayTitle ?? moonParentId,
+            input.worldSeed,
+            "Continuation",
+          ),
+      decision: mapDecision(moonParentId, decisions, hiddenIds, weakenedIds),
+    });
+    primaryIds.add(moonParentId);
+  }
+
   const moonNodes: GalaxyOrbitNode[] = moonParentId
     ? (nodeReasonerBranchesByParentId[moonParentId] ?? [])
-        .filter((b) => !hiddenIds.has(b.id) && decisions[b.id] !== "rejected" && !trail.includes(b.id))
+        .filter(
+          (b) =>
+            !hiddenIds.has(b.id) &&
+            decisions[b.id] !== "rejected" &&
+            !trail.includes(b.id) &&
+            b.id !== moonParentId &&
+            b.id !== centerId &&
+            !primaryIds.has(b.id),
+        )
         .map((branch) => ({
           id: branch.id,
           title: resolveMoonTitle(branch, input),

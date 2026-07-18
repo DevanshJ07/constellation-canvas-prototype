@@ -70,6 +70,32 @@ export function sanitizeCreatorCopy(text: string): string {
   return result.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Clear functional labels for story-world constellation categories (Phase 9B).
+ * Keeps the label short so the UI can pair it with the evocative title, e.g.
+ * "Climax" + "The Night the Idol Answers".
+ */
+const CONSTELLATION_CATEGORY_LABELS: Record<string, string> = {
+  characters: "Characters",
+  settings: "Settings",
+  themes: "Themes",
+  conflict: "Conflict",
+  timeline: "Timeline",
+  mysteries: "Mysteries",
+  power: "Power Structures",
+  climax: "Climax",
+  canon: "Canon Universe",
+  other: "World Area",
+};
+
+export function formatConstellationCategory(
+  category?: string | null,
+): string | undefined {
+  if (!category) return undefined;
+  const key = category.toLowerCase().trim();
+  return CONSTELLATION_CATEGORY_LABELS[key] ?? "World Area";
+}
+
 export function formatCreatorCategory(category?: string | null): string | undefined {
   if (!category) return undefined;
   const cleaned = sanitizeCreatorCopy(category.replace(/^✦\s*/, "").trim());

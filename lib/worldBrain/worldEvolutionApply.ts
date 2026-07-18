@@ -171,6 +171,12 @@ const SAFE_NODE_METADATA_FIELDS = new Set([
   "risk",
   "explorationQuestions",
   "nodeType",
+  // Phase 9B — story fields so accepted truths can visibly reframe node content.
+  "storyUse",
+  "possibleConflict",
+  "whyItBelongsHere",
+  "consequenceNote",
+  "evolutionState",
 ]);
 
 const SAFE_CONSTELLATION_METADATA_FIELDS = new Set([
@@ -179,6 +185,9 @@ const SAFE_CONSTELLATION_METADATA_FIELDS = new Set([
   "question",
   "priority",
   "title",
+  // Phase 9B — climax pressure + canon evolution.
+  "pressureNote",
+  "evolutionBehavior",
 ]);
 
 function deepCloneCanvas<T>(value: T): T {

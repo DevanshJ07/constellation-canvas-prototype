@@ -195,10 +195,11 @@ export function mapNodeReasonerOutputToCanvasNodes(
     generatedByAgentId,
   } = params;
 
-  const sourceNodeId = output.sourceNodeId.trim() || parentNode.id.trim();
+  // Canvas parent id is authoritative — LLM sourceNodeId can drift and break Galaxy moon anchoring.
+  const parentNodeId = parentNode.id.trim();
+  const sourceNodeId = parentNodeId || output.sourceNodeId.trim();
   const sourceConstellationId =
-    output.sourceConstellationId.trim() || selectedConstellationId.trim();
-  const parentNodeId = sourceNodeId;
+    (output.sourceConstellationId ?? "").trim() || selectedConstellationId.trim();
   const depthLevel = depthOverride ?? Math.max(2, output.suggestedDepth ?? 2);
 
   const taken = new Set<string>(existingNodeIds);
@@ -216,7 +217,7 @@ export function mapNodeReasonerOutputToCanvasNodes(
     taken.add(canvasId);
 
     const constellationId =
-      possibleNode.sourceConstellationId.trim() || sourceConstellationId;
+      (possibleNode.sourceConstellationId ?? "").trim() || sourceConstellationId;
 
     const { canvasNode, panelMeta: meta } = mapPossibleNewNodeToCanvasNode(
       possibleNode,

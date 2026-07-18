@@ -286,4 +286,5 @@ export type AgentStopReason =
   | "user_abort"                 // User navigated away before completion
   | "validation_hard_failure"    // Output failed a non-retryable validation rule
   | "confidence_floor"           // Final confidence below absolute minimum
-  | "duplicate_detected";        // Output matches a prior run's output exactly
+  | "duplicate_detected"         // Output matches a prior run's output exactly
+  | "timeout";                   // Hard latency budget exceeded (Phase 8D)

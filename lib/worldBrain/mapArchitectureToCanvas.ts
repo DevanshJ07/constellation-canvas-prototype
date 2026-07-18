@@ -1,7 +1,9 @@
 import type {
   ArchitectureControlRules,
+  ConstellationCategory,
   WorldArchitecture,
 } from "@/lib/worldBrain/architectWorld";
+import { formatConstellationCategory } from "@/lib/creatorCopy";
 import type { AiGeneratedBranch } from "@/lib/agentExplore";
 import type { AiDiscovery } from "@/types/discovery";
 
@@ -15,6 +17,28 @@ export type CanvasConstellation = {
   priority: number;
   agentIds: string[];
   nodeIds: string[];
+  /** Story-world structural role (Phase 9A/9B). */
+  category?: ConstellationCategory;
+  /** Clear functional label derived from category, e.g. "Climax" (Phase 9B). */
+  categoryLabel?: string;
+  /** What this area does for the story. */
+  storyFunction?: string;
+  /** Why this area matters emotionally / narratively. */
+  whyItMatters?: string;
+  /** How strongly accepted canon reshapes this area. */
+  canonSensitivity?: "low" | "medium" | "high";
+  /** How this area evolves as canon accumulates. */
+  evolutionBehavior?: string;
+  /**
+   * Evolving pressure note for the climax constellation, updated as truths are
+   * established (Phase 9B, Part G). Undefined until canon starts to accumulate.
+   */
+  pressureNote?: string;
+  /**
+   * Accepted-truth node ids recorded into the Canon Universe constellation
+   * (Phase 9B, Part D/F). Only populated on the canon-category constellation.
+   */
+  canonTruthIds?: string[];
 };
 
 export type CanvasNode = {
@@ -29,6 +53,18 @@ export type CanvasNode = {
   nodeType: string;
   status: "potential";
   aiGenerated: true;
+  /** How a creator can use this node in the story (Phase 9A). */
+  storyUse?: string;
+  /** A concrete conflict this node can create (Phase 9A). */
+  possibleConflict?: string;
+  /** Why this node belongs in its constellation (Phase 9A). */
+  whyItBelongsHere?: string;
+  /** Accepted-truth node ids that reshaped this node (Phase 9B, Part D/E). */
+  influencedByCanonIds?: string[];
+  /** Visible "Because [truth], this now…" consequence note (Phase 9B). */
+  consequenceNote?: string;
+  /** How this node changed in response to canon (Phase 9B). */
+  evolutionState?: "strengthened" | "weakened" | "reframed";
 };
 
 export type CanvasAgent = {
@@ -153,6 +189,9 @@ export function mapArchitectureToCanvasModel(
       nodeType: node.nodeType,
       status: "potential" as const,
       aiGenerated: true as const,
+      storyUse: node.storyUse,
+      possibleConflict: node.possibleConflict,
+      whyItBelongsHere: node.whyItBelongsHere,
     }));
 
   const nodeIds = new Set(nodes.map((n) => n.id));
@@ -181,6 +220,12 @@ export function mapArchitectureToCanvasModel(
         priority: c.priority,
         agentIds: linkedAgents,
         nodeIds: mergedNodeIds,
+        category: c.category,
+        categoryLabel: formatConstellationCategory(c.category),
+        storyFunction: c.storyFunction,
+        whyItMatters: c.whyItMatters,
+        canonSensitivity: c.canonSensitivity,
+        evolutionBehavior: c.evolutionBehavior,
       };
     },
   );
@@ -263,6 +308,12 @@ export function canvasNodeToAiDiscovery(
     risk: node.risk,
     explorationQuestions: node.explorationQuestions,
     nodeType: node.nodeType,
+    storyUse: node.storyUse,
+    possibleConflict: node.possibleConflict,
+    whyItBelongsHere: node.whyItBelongsHere,
+    consequenceNote: node.consequenceNote,
+    influencedByCanonIds: node.influencedByCanonIds,
+    evolutionState: node.evolutionState,
   };
 }
 
@@ -303,7 +354,7 @@ export function registerCanvasWorldModel(model: CanvasWorldModel | null): void {
   for (const constellation of model.constellations) {
     canvasDisplayRegistry.set(constellation.id, {
       title: constellation.displayTitle || constellation.title,
-      category: "Constellation",
+      category: constellation.categoryLabel || "Constellation",
     });
   }
 }

@@ -219,13 +219,32 @@ ref,
 
   const moonParentLayout = useMemo(() => {
     if (!scene.moonParentId) return null;
+    if (scene.moonNodes.length === 0) return null;
+
     if (scene.moonParentId === scene.centerId) {
-      return { x: center.x, y: center.y, id: scene.centerId };
+      // Offset from sun so moon orbit radius does not collapse to ~0
+      const r = Math.max(72, computePlanetOrbitRadius(size) * 0.32);
+      return {
+        x: center.x + r * 0.35,
+        y: center.y - r * 0.2,
+        id: scene.moonParentId,
+      };
     }
+
     const layout = layoutByPrimaryId.get(scene.moonParentId);
-    if (layout) return { x: layout.position.x, y: layout.position.y, id: scene.moonParentId };
-    return null;
-  }, [scene.moonParentId, scene.centerId, layoutByPrimaryId, center]);
+    if (layout) {
+      return { x: layout.position.x, y: layout.position.y, id: scene.moonParentId };
+    }
+
+    // Orphaned / nested moon parent without primary layout — keep moons visible.
+    const fallbackR = Math.max(96, computePlanetOrbitRadius(size) * 0.55);
+    const angle = -Math.PI / 5;
+    return {
+      x: center.x + Math.cos(angle) * fallbackR,
+      y: center.y + Math.sin(angle) * fallbackR,
+      id: scene.moonParentId,
+    };
+  }, [scene.moonParentId, scene.moonNodes.length, scene.centerId, layoutByPrimaryId, center, size]);
 
   const moonLayouts = useMemo((): OrbitNodeLayout[] => {
     if (!moonParentLayout || scene.moonNodes.length === 0) return [];

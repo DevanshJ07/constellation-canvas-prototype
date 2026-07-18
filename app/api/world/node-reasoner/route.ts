@@ -58,6 +58,7 @@ function isAvailableNode(value: unknown): value is NodeReasonerAvailableNode {
 }
 
 export async function POST(request: Request) {
+  const routeStart = Date.now();
   let body: NodeReasonerRequestBody;
 
   try {
@@ -160,13 +161,16 @@ export async function POST(request: Request) {
     const agentResult = await runNodeReasonerAgent(agentInput);
 
     console.info("[node-reasoner]", JSON.stringify({
+      requestId: agentInput.runId,
       selectedConstellationId,
       selectedNodeId,
+      selectedNodeTitle: input.selectedNode.displayTitle || input.selectedNode.title,
       agentStatus: agentResult.status,
       attemptNumber: agentResult.attemptNumber,
       validationValid: agentResult.validation.valid,
       possibleNewNodeCount: agentResult.output?.possibleNewNodes.length ?? 0,
       scopeLevel: agentResult.output?.explorationScope.scopeLevel ?? null,
+      totalRouteMs: Date.now() - routeStart,
       fallbackCopy: agentResult.status === "fallback" ? agentResult.userFacingFallbackCopy : null,
     }));
 
@@ -183,7 +187,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, output: agentResult.output });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Node reasoning failed";
-    console.error("[node-reasoner] error:", message);
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    console.error("[node-reasoner] error:", message, { totalRouteMs: Date.now() - routeStart });
+    return NextResponse.json({
+      success: false,
+      error: NODE_REASONER_FALLBACK_COPY,
+      userFacingFallbackCopy: NODE_REASONER_FALLBACK_COPY,
+    }, { status: 200 });
   }
 }

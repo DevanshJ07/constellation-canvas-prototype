@@ -149,6 +149,24 @@ export default function DiscoveryPanel({
     : null;
   const nodeType = isAiNode ? item.discovery.nodeType : null;
 
+  // Phase 9B — canon-driven evolution + story fields.
+  const consequenceNote = isAiNode ? item.discovery.consequenceNote : null;
+  const evolutionState = isAiNode ? item.discovery.evolutionState : null;
+  const storyUse = isAiNode ? item.discovery.storyUse : null;
+  const possibleConflict = isAiNode ? item.discovery.possibleConflict : null;
+  const evolutionLabel =
+    evolutionState === "strengthened"
+      ? "Strengthened by canon"
+      : evolutionState === "weakened"
+        ? "Weakened by canon"
+        : evolutionState === "reframed"
+          ? "Reframed by canon"
+          : null;
+
+  // Phase 9B — constellation-level fields (climax pressure, evolution behavior).
+  const pressureNote = isAiNode ? item.discovery.pressureNote : null;
+  const evolutionBehavior = isAiNode ? item.discovery.evolutionBehavior : null;
+
   const isAccepted = decision === "accepted";
   const isRejected = decision === "rejected";
   const canDecide = decision === "pending" || decision === "saved";
@@ -238,12 +256,65 @@ export default function DiscoveryPanel({
 
       {/* Scrollable body — primary content focus */}
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+        {/* Climax pressure that evolves with canon (Phase 9B, Part G) */}
+        {pressureNote && (
+          <section className="rounded-lg border border-rose-800/40 bg-rose-950/15 px-4 py-3">
+            <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-rose-300/85">
+              Where this is heading
+            </h3>
+            <p className="max-w-prose text-sm leading-[1.7] text-rose-100/85">{pressureNote}</p>
+          </section>
+        )}
+
+        {/* How this area evolves as canon grows (Phase 9B) */}
+        {!pressureNote && evolutionBehavior && (
+          <section className="rounded-md border border-slate-800/40 bg-slate-900/10 px-3 py-2">
+            <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+              How this area evolves
+            </p>
+            <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{evolutionBehavior}</p>
+          </section>
+        )}
+
+        {/* Canon-driven change (Phase 9B) */}
+        {consequenceNote && (
+          <section className="rounded-lg border border-emerald-800/40 bg-emerald-950/20 px-4 py-3">
+            <h3 className="mb-1.5 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-emerald-300/85">
+              How the world changed
+              {evolutionLabel && (
+                <span className="rounded-full border border-emerald-700/40 px-2 py-0.5 text-[8px] tracking-[0.14em] text-emerald-200/70">
+                  {evolutionLabel}
+                </span>
+              )}
+            </h3>
+            <p className="max-w-prose text-sm leading-[1.7] text-emerald-100/90">{consequenceNote}</p>
+          </section>
+        )}
+
         <section className="rounded-lg border border-slate-800/50 bg-slate-900/20 px-4 py-3.5">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
             Description
           </h3>
           <p className="max-w-prose text-sm leading-[1.7] text-slate-300">{description}</p>
         </section>
+
+        {storyUse && (
+          <section className="rounded-lg border border-slate-800/40 bg-slate-900/10 px-4 py-3.5">
+            <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              How to use it
+            </h3>
+            <p className="max-w-prose text-sm leading-[1.7] text-slate-400">{storyUse}</p>
+          </section>
+        )}
+
+        {possibleConflict && (
+          <section className="rounded-lg border border-amber-900/30 bg-amber-950/10 px-4 py-3.5">
+            <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-amber-500/80">
+              Possible conflict
+            </h3>
+            <p className="max-w-prose text-sm leading-[1.7] text-amber-200/70">{possibleConflict}</p>
+          </section>
+        )}
 
         {(whyItMatters || whyPromising) && (
           <section className="rounded-lg border border-slate-800/40 bg-slate-900/10 px-4 py-3.5">
@@ -506,7 +577,7 @@ export default function DiscoveryPanel({
               className="w-full rounded-lg border border-sky-500/40 bg-sky-950/30 px-4 py-2 text-xs font-semibold text-sky-200 transition hover:border-sky-400/60 hover:bg-sky-950/50 disabled:cursor-default disabled:opacity-60"
             >
               {nodeReasonerLoading
-                ? "Exploring continuations..."
+                ? "Exploring this path…"
                 : hasNodeReasonerCache
                   ? "Continuations loaded"
                   : "Explore Deeper"}

@@ -190,7 +190,14 @@ export function computeMoonOrbitPositions(
     parent.y - bounds.minY - edgeMargin,
     bounds.maxY - parent.y - edgeMargin,
   );
-  const moonRadius = Math.min(maxMoonRadius, distToSun * 0.58, Math.max(48, boundsLimit));
+  const moonRadius = Math.max(
+    56,
+    Math.min(
+      maxMoonRadius,
+      distToSun > 40 ? distToSun * 0.58 : maxMoonRadius * 0.85,
+      Math.max(48, boundsLimit),
+    ),
+  );
   const phase = stableHashToAngle(phaseSeed) * 0.1;
 
   if (count === 1) {

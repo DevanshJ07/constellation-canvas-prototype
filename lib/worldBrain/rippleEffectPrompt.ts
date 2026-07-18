@@ -25,7 +25,7 @@ import { getRippleReasoningRubricForPrompt } from "@/lib/worldBrain/rippleReason
 import type { RippleEffectPromptInput } from "@/lib/worldBrain/rippleEffectTypes";
 import type { UserDecisionEvent } from "@/lib/worldBrain/userDecisionTypes";
 
-const RECENT_EVENT_LIMIT = 10;
+const RECENT_EVENT_LIMIT = 6;
 
 const SYSTEM_ROLE = `You are a Ripple Effect Planner for an AI-native fictional worldbuilding canvas.
 

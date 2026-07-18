@@ -18,6 +18,8 @@ export type LLMGenerateJsonParams = {
   temperature?: number;
   responseMimeType?: string;
   schemaName?: string;
+  /** Optional abort signal for hard request timeouts (Phase 8D). */
+  signal?: AbortSignal;
 };
 
 export type LLMGenerateJsonResult = {
@@ -103,6 +105,7 @@ async function generateJsonWithGemini(
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: params.signal,
     body: JSON.stringify({
       contents: [{ role: "user", parts: [{ text: params.prompt }] }],
       generationConfig: {
@@ -163,6 +166,7 @@ async function generateJsonWithOpenRouter(
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
+    signal: params.signal,
     body: JSON.stringify({
       model,
       messages: [{ role: "user", content: params.prompt }],

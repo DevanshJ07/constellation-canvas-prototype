@@ -175,6 +175,16 @@ export function computeOrbitPositions(
 /** World overview — minimum center-to-center separation (includes label footprint). */
 export const WORLD_OVERVIEW_MIN_SEPARATION = 340;
 
+/**
+ * Axis-aligned "no-overlap box" for a constellation card in the world overview.
+ * Cards are 280×200; the extra horizontal margin protects the wide uppercase
+ * label from colliding with a neighbour's label. Used for dense (7-8) layouts.
+ */
+export const WORLD_OVERVIEW_BOX = {
+  width: GALAXY_NODE_FOOTPRINT.width + 44,
+  height: GALAXY_NODE_FOOTPRINT.height + 36,
+};
+
 function separateOverviewCenters(
   centers: Point[],
   minDistance: number,
@@ -207,6 +217,53 @@ function separateOverviewCenters(
   return pts;
 }
 
+/**
+ * Box-aware separation: pushes cards apart on the axis of least overlap so that
+ * for every pair either |dx| ≥ box.width or |dy| ≥ box.height. This packs a
+ * dense cluster (7-8 constellations) across the wide canvas without label
+ * collisions far better than radial min-distance separation.
+ */
+function separateOverviewCentersByBox(
+  centers: Point[],
+  box: { width: number; height: number },
+  bounds: LayoutBounds,
+): Point[] {
+  const pts = centers.map((p) => ({ ...p }));
+  for (let iter = 0; iter < 40; iter++) {
+    let moved = false;
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 1; j < pts.length; j++) {
+        const a = pts[i]!;
+        const b = pts[j]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const overlapX = box.width - Math.abs(dx);
+        const overlapY = box.height - Math.abs(dy);
+        if (overlapX <= 0 || overlapY <= 0) continue; // no box overlap
+        moved = true;
+        // Resolve along the axis needing the smaller push.
+        if (overlapX < overlapY) {
+          const push = overlapX / 2 + 0.5;
+          const dir = dx === 0 ? (i % 2 === 0 ? -1 : 1) : Math.sign(dx);
+          a.x -= dir * push;
+          b.x += dir * push;
+        } else {
+          const push = overlapY / 2 + 0.5;
+          const dir = dy === 0 ? (i % 2 === 0 ? -1 : 1) : Math.sign(dy);
+          a.y -= dir * push;
+          b.y += dir * push;
+        }
+      }
+    }
+    for (const p of pts) {
+      p.x = Math.min(bounds.maxX, Math.max(bounds.minX, p.x));
+      p.y = Math.min(bounds.maxY, Math.max(bounds.minY, p.y));
+    }
+    if (!moved) break;
+  }
+  return pts;
+}
+
 /** World overview — constellations as star systems in a galaxy cluster. */
 export function computeWorldGalaxyLayout(
   ids: string[],
@@ -218,25 +275,34 @@ export function computeWorldGalaxyLayout(
   const { width, height } = getUsableCanvasSize(canvas);
   const minDim = Math.min(width, height);
   const bounds = computeSafeLayoutBounds(canvas);
-
-  const spread =
-    count <= 3 ? 0.32 : count <= 5 ? 0.4 : count <= 6 ? 0.42 : 0.44;
-  const rx = minDim * spread;
-  const ry = minDim * spread * 0.86;
   const phase = stableHashToAngle(ids.join("|")) * 0.08;
 
   let centers: Point[];
   if (count === 1) {
     centers = [{ x: 0, y: 0 }];
-  } else {
+  } else if (count <= 6) {
+    // Sparse clusters read best as a single organic ellipse.
+    const spread = count <= 3 ? 0.32 : count <= 5 ? 0.4 : 0.42;
+    const rx = minDim * spread;
+    const ry = minDim * spread * 0.86;
     centers = ids.map((_, index) => {
       const angle = phase - Math.PI / 2 + (index * 2 * Math.PI) / count;
-      return {
-        x: Math.cos(angle) * rx,
-        y: Math.sin(angle) * ry,
-      };
+      return { x: Math.cos(angle) * rx, y: Math.sin(angle) * ry };
     });
     centers = separateOverviewCenters(centers, WORLD_OVERVIEW_MIN_SEPARATION, bounds);
+  } else {
+    // Dense clusters (7-8+): staggered double-ellipse spread across the full
+    // width, then box-aware separation to guarantee readable spacing.
+    const rx = Math.min(bounds.maxX * 0.98, width * 0.44);
+    const ry = Math.min(bounds.maxY * 0.98, height * 0.46);
+    centers = ids.map((_, index) => {
+      const angle = phase - Math.PI / 2 + (index * 2 * Math.PI) / count;
+      const outer = index % 2 === 0;
+      const scaleX = outer ? 1 : 0.56;
+      const scaleY = outer ? 1 : 0.52;
+      return { x: Math.cos(angle) * rx * scaleX, y: Math.sin(angle) * ry * scaleY };
+    });
+    centers = separateOverviewCentersByBox(centers, WORLD_OVERVIEW_BOX, bounds);
   }
 
   const positions: Record<string, Point> = {};

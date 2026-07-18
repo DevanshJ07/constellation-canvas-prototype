@@ -1,6 +1,8 @@
 /**
  * Client-side helper to request Ripple Preview from a UserDecisionEvent (Phase 4.12).
  * Preview-only — does not apply operations or mutate canvas state.
+ *
+ * Phase 8D: session cache + in-flight dedupe by trigger decision id.
  */
 
 import type { CanvasWorldModel } from "@/lib/worldBrain/mapArchitectureToCanvas";
@@ -18,9 +20,10 @@ import type {
   DecisionEventLog,
   UserDecisionEvent,
 } from "@/lib/worldBrain/userDecisionTypes";
+import { SessionRequestCache } from "@/lib/worldBrain/agents/sessionRequestCache";
 
 export const RIPPLE_PREVIEW_FRIENDLY_ERROR =
-  "Ripple preview could not be generated yet.";
+  "This truth has been added. The world needs a little more context before it changes.";
 
 export type RippleTitleLookupMaps = {
   nodeTitleById: Record<string, string>;
@@ -105,42 +108,71 @@ type RippleEffectApiResponse = {
   errors?: string[];
 };
 
+/** Session-scoped cache: same decision id reuses prior ripple preview. */
+const ripplePreviewCache = new SessionRequestCache<GenerateRipplePreviewResult>();
+
+/** Exposed for tests — clears in-memory ripple preview cache. */
+export function clearRipplePreviewSessionCache(): void {
+  ripplePreviewCache.clear();
+}
+
+/** Exposed for tests — inspect cache hit without network. */
+export function getCachedRipplePreviewForDecision(
+  decisionId: string,
+): GenerateRipplePreviewResult | undefined {
+  return ripplePreviewCache.getCached(decisionId);
+}
+
 export async function generateRipplePreviewForDecision(
   params: GenerateRipplePreviewParams,
 ): Promise<GenerateRipplePreviewResult> {
-  try {
-    const res = await fetch("/api/world/ripple-effect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        triggerEvent: params.triggerEvent,
-        decisionLog: params.decisionLog,
-        canvasModel: params.canvasModel,
-        activeCanonState: params.activeCanonState,
-        affectedScopeHint: params.affectedScopeHint ?? "node",
-        evaluationMode: params.evaluationMode ?? "balanced",
-      }),
-    });
+  const decisionId = params.triggerEvent.id;
 
-    let data: RippleEffectApiResponse;
-    try {
-      data = (await res.json()) as RippleEffectApiResponse;
-    } catch {
-      return { ok: false, error: RIPPLE_PREVIEW_FRIENDLY_ERROR };
-    }
+  return ripplePreviewCache.runDeduped(
+    decisionId,
+    async () => {
+      try {
+        const res = await fetch("/api/world/ripple-effect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            triggerEvent: params.triggerEvent,
+            decisionLog: params.decisionLog,
+            canvasModel: params.canvasModel,
+            activeCanonState: params.activeCanonState,
+            affectedScopeHint: params.affectedScopeHint ?? "node",
+            evaluationMode: params.evaluationMode ?? "balanced",
+          }),
+        });
 
-    if (!data.success || !data.output) {
-      return { ok: false, error: RIPPLE_PREVIEW_FRIENDLY_ERROR };
-    }
+        let data: RippleEffectApiResponse;
+        try {
+          data = (await res.json()) as RippleEffectApiResponse;
+        } catch {
+          return { ok: false, error: RIPPLE_PREVIEW_FRIENDLY_ERROR };
+        }
 
-    const preview = buildRipplePreviewModel(data.output, {
-      nodeTitleById: params.nodeTitleById,
-      constellationTitleById: params.constellationTitleById,
-      title: `Ripple — ${params.triggerEvent.target.displayTitle}`,
-    });
+        if (!data.success || !data.output) {
+          const friendly =
+            typeof data.error === "string" &&
+            data.error.length > 10 &&
+            !/\b(patch|dry run|apply plan|blocker|validation|API|LLM)\b/i.test(data.error)
+              ? data.error
+              : RIPPLE_PREVIEW_FRIENDLY_ERROR;
+          return { ok: false, error: friendly };
+        }
 
-    return { ok: true, preview };
-  } catch {
-    return { ok: false, error: RIPPLE_PREVIEW_FRIENDLY_ERROR };
-  }
+        const preview = buildRipplePreviewModel(data.output, {
+          nodeTitleById: params.nodeTitleById,
+          constellationTitleById: params.constellationTitleById,
+          title: `Ripple — ${params.triggerEvent.target.displayTitle}`,
+        });
+
+        return { ok: true, preview };
+      } catch {
+        return { ok: false, error: RIPPLE_PREVIEW_FRIENDLY_ERROR };
+      }
+    },
+    { cachePredicate: (result) => result.ok },
+  );
 }

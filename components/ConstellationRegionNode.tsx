@@ -17,6 +17,10 @@ export type ConstellationRegionNodeData = {
   vitalityDots?: VitalityDot[];
   description?: string;
   question?: string;
+  /** Clear functional role label, e.g. "Climax" (Phase 9B). */
+  categoryLabel?: string;
+  /** Subtle start-here guidance badge, e.g. "Start here" (Phase 9B). */
+  startBadge?: string;
 };
 
 const STAR_CLUSTERS: Record<
@@ -89,7 +93,7 @@ function ConstellationLines({
 }
 
 export default function ConstellationRegionNode({ data }: NodeProps) {
-  const { regionId, themeKey, label, icon, width, height, vitalityDots } =
+  const { regionId, themeKey, label, icon, width, height, vitalityDots, categoryLabel, startBadge } =
     data as ConstellationRegionNodeData;
   const themeId = themeKey ?? "mythology";
   const theme = getRegionTheme(themeId);
@@ -162,6 +166,20 @@ export default function ConstellationRegionNode({ data }: NodeProps) {
         />
       ))}
 
+      {/* Start-here guidance badge (Phase 9B) */}
+      {isOverview && startBadge && (
+        <div
+          className="absolute -top-3 left-1 z-10 rounded-full px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.16em]"
+          style={{
+            color: "rgba(16,24,20,0.95)",
+            background: "linear-gradient(to right, rgba(110,231,183,0.95), rgba(52,211,153,0.9))",
+            boxShadow: "0 0 18px rgba(52,211,153,0.5)",
+          }}
+        >
+          {startBadge}
+        </div>
+      )}
+
       {/* Label block */}
       <div className="relative px-1 pt-1">
         {/* Icon */}
@@ -170,6 +188,13 @@ export default function ConstellationRegionNode({ data }: NodeProps) {
         >
           {icon}
         </p>
+
+        {/* Functional role label (Phase 9B) */}
+        {categoryLabel && (
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-400/90">
+            {categoryLabel}
+          </p>
+        )}
 
         <h2
           className={`whitespace-nowrap text-[22px] font-medium uppercase leading-none tracking-[0.32em] ${theme.labelClass}`}

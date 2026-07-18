@@ -178,16 +178,38 @@ export async function POST(request: Request) {
   );
 
   // ── Run agent ─────────────────────────────────────────────────────────────
-  const agentResult = await runRippleConsequenceAgent(agentInput);
+  const routeStart = Date.now();
+  let agentResult;
+  try {
+    agentResult = await runRippleConsequenceAgent(agentInput);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Ripple failed";
+    console.error("[ripple-effect] error:", message, {
+      totalRouteMs: Date.now() - routeStart,
+    });
+    return NextResponse.json(
+      {
+        success: false,
+        error: RIPPLE_AGENT_FALLBACK_COPY,
+        errors: [RIPPLE_AGENT_FALLBACK_COPY],
+        warnings: [],
+      },
+      { status: 200 },
+    );
+  }
 
   console.info("[ripple-effect]", JSON.stringify({
+    requestId: agentInput.runId,
     triggerEventId: body.triggerEvent.id,
+    triggerNodeTitle: body.triggerEvent.target.displayTitle,
     agentStatus: agentResult.status,
     attemptNumber: agentResult.attemptNumber,
     validationValid: agentResult.validation.valid,
     operationCount: agentResult.output?.suggestedOperations.length ?? 0,
     impactLevel: agentResult.output?.impactLevel ?? null,
     hasUserFacingSummary: Boolean(agentResult.output?.userFacingSummary),
+    totalRouteMs: Date.now() - routeStart,
+    stopReason: agentResult.stopReason,
   }));
 
   // ── Fallback path ─────────────────────────────────────────────────────────
@@ -199,7 +221,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           success: false,
-          error: agentResult.failure?.internalDetail ?? "Provider error",
+          error: agentResult.failure?.userMessage ?? RIPPLE_AGENT_FALLBACK_COPY,
           errors: [agentResult.failure?.internalDetail ?? "Provider error"],
           warnings: [],
         },
@@ -207,14 +229,16 @@ export async function POST(request: Request) {
       );
     }
 
+    // Timeout / soft failure: truth already saved client-side — do not block UI
     return NextResponse.json(
       {
         success: false,
-        error: RIPPLE_AGENT_FALLBACK_COPY,
-        errors: [agentResult.failure?.internalDetail ?? RIPPLE_AGENT_FALLBACK_COPY],
+        error: agentResult.userFacingFallbackCopy || RIPPLE_AGENT_FALLBACK_COPY,
+        errors: [],
         warnings: [],
+        userFacingFallbackCopy: agentResult.userFacingFallbackCopy || RIPPLE_AGENT_FALLBACK_COPY,
       },
-      { status: 422 },
+      { status: 200 },
     );
   }
 

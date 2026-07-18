@@ -197,6 +197,8 @@ import {
   sanitizeCreatorCopy,
   formatCreatorCategory,
 } from "@/lib/creatorCopy";
+import { recommendStartingConstellations } from "@/lib/worldBrain/worldOverviewGuidance";
+import { applyAcceptedTruthToWorld } from "@/lib/worldBrain/applyAcceptedTruth";
 import {
   approveSafeRippleOperations,
   canOpenWorldEvolutionPreview,
@@ -412,6 +414,8 @@ export default function ConstellationCanvas({
     evolutionAppliedCanvasModel ?? initialArchitectureCanvasModel;
   const [navState, setNavState] = useState<NavState>({ mode: "overview" });
   const [selectedItem, setSelectedItem] = useState<PanelItem | null>(null);
+  /** Last node established as truth — used to evolve the world on accept (Phase 9B). */
+  const [lastTruthNodeId, setLastTruthNodeId] = useState<string | null>(null);
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
   const [justRevealedId, setJustRevealedId] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<Record<string, DiscoveryDecision>>(
@@ -496,6 +500,8 @@ export default function ConstellationCanvas({
   const [worldChangeStatusMessage, setWorldChangeStatusMessage] = useState<string | null>(
     null,
   );
+  /** Transient "World updated." confirmation shown after an accepted truth applies (Phase 9B). */
+  const [worldUpdatedNotice, setWorldUpdatedNotice] = useState<string | null>(null);
   const [isApplyingWorldChange, setIsApplyingWorldChange] = useState(false);
   const [rippleReviewMessage, setRippleReviewMessage] = useState<string | null>(null);
   const [worldChangeCardPhase, setWorldChangeCardPhase] = useState<
@@ -709,8 +715,15 @@ export default function ConstellationCanvas({
   );
 
   const applyNodeReasonerOutput = useCallback(
-    (parentId: string, output: NodeReasonerOutput, constellationId: string) => {
-      if (!architectureCanvasModel) return;
+    (parentId: string, output: NodeReasonerOutput, constellationId: string): number => {
+      if (!architectureCanvasModel) {
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[explore-deeper] apply skipped — no architecture model", {
+            parentId,
+          });
+        }
+        return 0;
+      }
 
       const parentMeta = reasonedNodeDetails[parentId];
       const archNode = architectureCanvasModel.nodes.find((n) => n.id === parentId);
@@ -762,7 +775,7 @@ export default function ConstellationCanvas({
       });
 
       const branches = mapped.nodes.map((n) =>
-        nodeReasonerCanvasNodeToAiBranch(n, mapped.panelMeta[n.id], parentId),
+        nodeReasonerCanvasNodeToAiBranch(n, mapped.panelMeta[n.id]!, parentId),
       );
 
       registerNodeReasonerNodeMeta(mapped.panelMeta, registerReasonedNodeMeta);
@@ -770,6 +783,20 @@ export default function ConstellationCanvas({
       setNodeReasonerChildPositions((prev) => ({ ...prev, ...layout.positions }));
       setNodeReasonerBranchesByParentId((prev) => ({ ...prev, [parentId]: branches }));
       setNodeConstellationMap((prev) => ({ ...prev, ...mapped.nodeConstellationMap }));
+
+      if (process.env.NODE_ENV === "development") {
+        console.debug("[explore-deeper] applied child nodes", {
+          parentId,
+          parentTitle: parentNode.displayTitle,
+          apiChildCount: output.possibleNewNodes.length,
+          mappedChildCount: mapped.nodes.length,
+          branchCount: branches.length,
+          childParentIds: mapped.nodes.map((n) => n.parentNodeId),
+          childIds: mapped.nodes.map((n) => n.id),
+        });
+      }
+
+      return branches.length;
     },
     [
       architectureCanvasModel,
@@ -872,7 +899,7 @@ export default function ConstellationCanvas({
 
   const galaxyDiscoveryScene = useMemo(() => {
     if (navState.mode !== "discovery") return null;
-    return mapCanvasStateToGalaxyScene({
+    const scene = mapCanvasStateToGalaxyScene({
       navState,
       decisions,
       hiddenIds,
@@ -889,6 +916,18 @@ export default function ConstellationCanvas({
       worldRippleActive:
         worldChangeCardPhase === "pending" || isGeneratingRipplePreview,
     });
+
+    if (process.env.NODE_ENV === "development") {
+      console.debug("[explore-deeper] galaxy scene", {
+        selectedNodeId,
+        primaryCount: scene.primaryNodes.length,
+        moonParentId: scene.moonParentId,
+        moonCount: scene.moonNodes.length,
+        moonIds: scene.moonNodes.map((m) => m.id),
+      });
+    }
+
+    return scene;
   }, [
     navState,
     decisions,
@@ -934,8 +973,58 @@ export default function ConstellationCanvas({
 
     const parentId = selectedNodeId;
     const cached = nodeReasonerOutputsByParentId[parentId];
-    if (cached) {
+    const existingBranches = nodeReasonerBranchesByParentId[parentId] ?? [];
+    const cachedHasChildren =
+      Boolean(cached?.possibleNewNodes?.length) && existingBranches.length > 0;
+
+    if (process.env.NODE_ENV === "development") {
+      console.debug("[explore-deeper] click", {
+        parentId,
+        selectedTitle:
+          reasonedNodeDetails[parentId]?.displayTitle ??
+          nodeReasonerPanelMeta[parentId]?.displayTitle ??
+          parentId,
+        hasCache: Boolean(cached),
+        cachedChildCount: cached?.possibleNewNodes?.length ?? 0,
+        existingBranchCount: existingBranches.length,
+      });
+    }
+
+    // Reuse in-session results only when children are already on the canvas.
+    // Empty / orphaned cache must not block a fresh generation.
+    if (cachedHasChildren) {
       setNodeReasonerError(null);
+      if (process.env.NODE_ENV === "development") {
+        console.debug("[explore-deeper] reused cached children", {
+          parentId,
+          branchCount: existingBranches.length,
+        });
+      }
+      return;
+    }
+
+    if (cached && existingBranches.length === 0 && cached.possibleNewNodes?.length) {
+      try {
+        const restored = applyNodeReasonerOutput(parentId, cached, constellationId);
+        if (restored > 0) {
+          setNodeReasonerError(null);
+          return;
+        }
+      } catch (error) {
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[explore-deeper] cache re-apply failed", { parentId, error });
+        }
+      }
+      // Drop empty/broken cache so we can regenerate
+      setNodeReasonerOutputsByParentId((prev) => {
+        const next = { ...prev };
+        delete next[parentId];
+        return next;
+      });
+    }
+
+    // Prevent duplicate in-flight Explore Deeper for the same parent
+    if (isReasoningNode && reasoningNodeId === parentId) {
       return;
     }
 
@@ -977,40 +1066,69 @@ export default function ConstellationCanvas({
         success?: boolean;
         output?: NodeReasonerOutput;
         error?: string;
+        userFacingFallbackCopy?: string;
       };
     };
 
     try {
-      let data = await requestNodeReasoner();
-      if (!data.success || !data.output) {
-        data = await requestNodeReasoner();
-      }
+      const data = await requestNodeReasoner();
 
       if (nodeReasonerRequestGenRef.current[parentId] !== nextGen) return;
 
       if (!data.success || !data.output) {
         if (process.env.NODE_ENV === "development") {
-          console.debug("[node-reasoner] failed", {
+          console.debug("[explore-deeper] api failed", {
             parentId,
-            reason: "api_no_output",
             detail: data.error,
           });
+        }
+        setNodeReasonerError(
+          data.userFacingFallbackCopy ||
+            "This path needs one more clue. Try steering it.",
+        );
+        return;
+      }
+
+      const apiChildCount = data.output.possibleNewNodes?.length ?? 0;
+      if (process.env.NODE_ENV === "development") {
+        console.debug("[explore-deeper] api success", {
+          parentId,
+          apiChildCount,
+          sourceNodeId: data.output.sourceNodeId,
+        });
+      }
+
+      if (apiChildCount === 0) {
+        setNodeReasonerError("This path needs one more clue. Try steering it.");
+        return;
+      }
+
+      let mappedCount = 0;
+      try {
+        mappedCount = applyNodeReasonerOutput(parentId, data.output, constellationId);
+      } catch (error) {
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[explore-deeper] apply threw", { parentId, error });
         }
         setNodeReasonerError("This path needs one more clue. Try steering it.");
         return;
       }
 
+      if (mappedCount === 0) {
+        setNodeReasonerError("This path needs one more clue. Try steering it.");
+        return;
+      }
+
+      // Cache only after children are successfully mapped onto the canvas
       setNodeReasonerOutputsByParentId((prev) => ({
         ...prev,
         [parentId]: data.output!,
       }));
-      applyNodeReasonerOutput(parentId, data.output, constellationId);
     } catch (error) {
       if (nodeReasonerRequestGenRef.current[parentId] === nextGen) {
         if (process.env.NODE_ENV === "development") {
-          console.debug("[node-reasoner] threw", {
+          console.debug("[explore-deeper] threw", {
             parentId,
-            reason: "exception",
             detail: error,
           });
         }
@@ -1027,8 +1145,11 @@ export default function ConstellationCanvas({
     selectedNodeId,
     navState,
     nodeReasonerOutputsByParentId,
-    reasonedConstellations,
     nodeReasonerBranchesByParentId,
+    isReasoningNode,
+    reasoningNodeId,
+    reasonedConstellations,
+    reasonedNodeDetails,
     nodeReasonerPanelMeta,
     nodeConstellationMap,
     worldSeed,
@@ -1049,7 +1170,8 @@ export default function ConstellationCanvas({
   }, [architectureCanvasModel, selectedNodeId, selectedItem, navState.mode]);
 
   const hasNodeReasonerCache = Boolean(
-    selectedNodeId && nodeReasonerOutputsByParentId[selectedNodeId],
+    selectedNodeId &&
+      (nodeReasonerBranchesByParentId[selectedNodeId]?.length ?? 0) > 0,
   );
 
   const baseLayout = useMemo(
@@ -1066,6 +1188,16 @@ export default function ConstellationCanvas({
   );
 
   const overviewLayout = architectureLayout ?? baseLayout;
+
+  // ── "Where to begin" guidance (Phase 9B, Part C) ──────────────────────────
+  const startBadgeIds = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!architectureCanvasModel) return map;
+    for (const rec of recommendStartingConstellations(architectureCanvasModel, 2)) {
+      map.set(rec.constellationId, rec.label);
+    }
+    return map;
+  }, [architectureCanvasModel]);
 
   // ── Trail layout: PAST ← CURRENT → FUTURE ─────────────────────────────────
   const trailLayout = useMemo(() => {
@@ -1635,6 +1767,11 @@ export default function ConstellationCanvas({
             label: archConst?.displayTitle
               ? simplifyDisplayLabel(archConst.displayTitle)
               : (node.data as { label?: string }).label,
+            categoryLabel: archConst?.categoryLabel,
+            startBadge:
+              mode === "overview" && startBadgeIds.has(regionId)
+                ? startBadgeIds.get(regionId)
+                : undefined,
             vitalityDots,
           },
         };
@@ -1675,6 +1812,7 @@ export default function ConstellationCanvas({
     selectedNodeId,
     rippleStates,
     architectureCanvasModel,
+    startBadgeIds,
   ]);
 
   // ── Edges ─────────────────────────────────────────────────────────────────
@@ -1894,6 +2032,10 @@ export default function ConstellationCanvas({
           category: "Constellation",
           whyItMatters: constellation.question,
           generated: true,
+          categoryLabel: constellation.categoryLabel,
+          pressureNote: constellation.pressureNote,
+          canonSensitivity: constellation.canonSensitivity,
+          evolutionBehavior: constellation.evolutionBehavior,
         },
       });
       void fetchReasonerForConstellation(constellation);
@@ -2573,83 +2715,108 @@ export default function ConstellationCanvas({
     ],
   );
 
+  /** Rebuild the currently selected panel item from an evolved canvas model. */
+  const refreshSelectedItemFromModel = useCallback(
+    (model: EvolutionAwareCanvasModel) => {
+      setSelectedItem((prev) => {
+        if (!prev || prev.kind !== "ai-discovery") return prev;
+        const node = model.nodes.find((n) => n.id === prev.discovery.id);
+        if (!node) return prev;
+        const constellation = model.constellations.find(
+          (c) => c.id === node.constellationId,
+        );
+        const agentName = constellation
+          ? getAgentNameForConstellation(model, constellation)
+          : "Reasoning Agent";
+        return {
+          kind: "ai-discovery",
+          discovery: canvasNodeToAiDiscovery(node, agentName),
+        };
+      });
+    },
+    [],
+  );
+
   const handleAcceptWorldChange = useCallback(() => {
-    if (!ripplePreview || !architectureCanvasModel) return;
-
-    if (isRipplePreviewEmpty(ripplePreview)) {
-      setRippleConsequenceCardOpen(false);
-      setWorldChangeStatusMessage(null);
-      return;
-    }
-
-    const bundle = buildWorldChangeDryRunBundle({
-      preview: ripplePreview,
-      canvasModel: architectureCanvasModel,
-      decisionEventLog,
-      nodeTitleById: rippleTitleMaps.nodeTitleById,
-      nodeConstellationMap,
-    });
-
-    setRipplePreview(bundle.approvedPreview);
-
-    if (!canOpenWorldEvolutionPreview(bundle.approvedPreview)) {
-      setWorldChangeStatusMessage(getWorldChangeUserMessage("review_needed"));
-      return;
-    }
-
-    if (!canAutoApplyWorldChange(bundle)) {
-      setWorldChangeStatusMessage(getWorldChangeUserMessage("review_needed"));
-      return;
-    }
+    if (!architectureCanvasModel) return;
 
     setIsApplyingWorldChange(true);
     setWorldChangeStatusMessage(null);
 
+    // The world must ALWAYS visibly respond to an accepted truth. We first make
+    // a best-effort attempt at the richer LLM-driven world evolution, then apply
+    // a deterministic, canon-safe content evolution as a guaranteed baseline.
+    let workingModel: EvolutionAwareCanvasModel = architectureCanvasModel;
+
     try {
-      const currentCanvasFingerprint = createCanvasEvolutionFingerprint(
-        architectureCanvasModel,
-      );
-      const dryRun = bundle.dryRun!;
+      if (ripplePreview && !isRipplePreviewEmpty(ripplePreview)) {
+        const bundle = buildWorldChangeDryRunBundle({
+          preview: ripplePreview,
+          canvasModel: architectureCanvasModel,
+          decisionEventLog,
+          nodeTitleById: rippleTitleMaps.nodeTitleById,
+          nodeConstellationMap,
+        });
+        setRipplePreview(bundle.approvedPreview);
 
-      if (
-        dryRun.canvasFingerprint &&
-        dryRun.canvasFingerprint !== currentCanvasFingerprint
-      ) {
-        setWorldChangeStatusMessage(getWorldChangeUserMessage("review_needed"));
-        return;
-      }
+        const currentCanvasFingerprint =
+          createCanvasEvolutionFingerprint(architectureCanvasModel);
+        const dryRun = bundle.dryRun;
 
-      const result = applyWorldEvolutionPatches({
-        canvasModel: architectureCanvasModel,
-        dryRun,
-        confirmed: true,
-        selectedPatchIds: bundle.readyPatchIds,
-        allowNeedsReviewPatches: false,
-        canonState: summarizeCanonStateFromEventLog(decisionEventLog),
-        planId: bundle.plan?.id,
-        triggerEventId: bundle.plan?.triggerEventId,
-        evolutionPolicy: bundle.plan?.policy,
-        currentCanvasFingerprint,
-      });
-
-      setLastWorldEvolutionApplyResult(result);
-
-      if (result.status === "applied") {
-        setEvolutionAppliedCanvasModel(result.canvasModel);
-        syncEvolutionOverlayToUi(result.canvasModel, { mode: "apply" });
-        setEvolutionHistoryEntries((prev) => [...prev, result.historyEntry]);
-        setRippleConsequenceCardOpen(false);
-        setWorldChangeCardPhase("idle");
-        setWorldChangeStatusMessage(null);
-        setRipplePreviewPanelOpen(false);
-        setEvolutionPreviewPanelOpen(false);
-        setWorldEvolutionApplyError(null);
-      } else {
-        if (process.env.NODE_ENV === "development") {
-          console.debug("[world-change] apply blocked", result);
+        if (
+          canOpenWorldEvolutionPreview(bundle.approvedPreview) &&
+          canAutoApplyWorldChange(bundle) &&
+          dryRun &&
+          (!dryRun.canvasFingerprint ||
+            dryRun.canvasFingerprint === currentCanvasFingerprint)
+        ) {
+          const result = applyWorldEvolutionPatches({
+            canvasModel: architectureCanvasModel,
+            dryRun,
+            confirmed: true,
+            selectedPatchIds: bundle.readyPatchIds,
+            allowNeedsReviewPatches: false,
+            canonState: summarizeCanonStateFromEventLog(decisionEventLog),
+            planId: bundle.plan?.id,
+            triggerEventId: bundle.plan?.triggerEventId,
+            evolutionPolicy: bundle.plan?.policy,
+            currentCanvasFingerprint,
+          });
+          setLastWorldEvolutionApplyResult(result);
+          if (result.status === "applied") {
+            workingModel = result.canvasModel;
+            setEvolutionHistoryEntries((prev) => [...prev, result.historyEntry]);
+          }
         }
-        setWorldChangeStatusMessage(getWorldChangeUserMessage("review_needed"));
       }
+
+      // Guaranteed deterministic, visible world change (Phase 9B, Parts D/E/F/G).
+      if (lastTruthNodeId) {
+        const truthResult = applyAcceptedTruthToWorld(workingModel, lastTruthNodeId);
+        if (truthResult.applied) {
+          workingModel = truthResult.canvasModel as EvolutionAwareCanvasModel;
+          // Reflect weakened nodes visually via the existing overlay dimming.
+          const weakened = truthResult.changes
+            .filter((c) => c.evolutionState === "weakened")
+            .map((c) => c.nodeId);
+          if (weakened.length > 0) {
+            setWeakenedIds((prev) => new Set([...prev, ...weakened]));
+          }
+        }
+      }
+
+      setEvolutionAppliedCanvasModel(workingModel);
+      syncEvolutionOverlayToUi(workingModel, { mode: "apply" });
+      refreshSelectedItemFromModel(workingModel);
+
+      setRippleConsequenceCardOpen(false);
+      setWorldChangeCardPhase("idle");
+      setRipplePreviewPanelOpen(false);
+      setEvolutionPreviewPanelOpen(false);
+      setWorldEvolutionApplyError(null);
+      setWorldChangeStatusMessage(null);
+      setWorldUpdatedNotice("World updated.");
+      window.setTimeout(() => setWorldUpdatedNotice(null), 2800);
     } catch (error) {
       if (process.env.NODE_ENV === "development") {
         console.debug("[world-change] apply failed", error);
@@ -2665,6 +2832,8 @@ export default function ConstellationCanvas({
     rippleTitleMaps.nodeTitleById,
     nodeConstellationMap,
     syncEvolutionOverlayToUi,
+    lastTruthNodeId,
+    refreshSelectedItemFromModel,
   ]);
 
   // ── Action handler ─────────────────────────────────────────────────────────
@@ -2712,6 +2881,7 @@ export default function ConstellationCanvas({
 
       if (decisionEventResult && architectureCanvasModel) {
         if (action === "accept") {
+          setLastTruthNodeId(id);
           setRippleConsequenceCardOpen(true);
           setWorldChangeCardPhase("pending");
           setRipplePreview(null);
@@ -3497,7 +3667,7 @@ export default function ConstellationCanvas({
             style={{ left: `${SIDEBAR_WIDTH_PX}px`, right: canvasRightInset, top: "78px" }}
           >
             <span className="rounded-full border border-sky-500/40 bg-sky-950/60 px-4 py-1.5 text-[11px] text-sky-200 shadow-[0_0_20px_rgba(56,189,248,0.2)]">
-              Exploring continuations…
+              Exploring this path…
             </span>
           </div>
         )}
@@ -3718,6 +3888,13 @@ export default function ConstellationCanvas({
                 >
                   ×
                 </button>
+              </div>
+            )}
+            {worldUpdatedNotice && (
+              <div className="pointer-events-none absolute bottom-28 left-1/2 z-30 -translate-x-1/2">
+                <div className="rounded-full border border-emerald-700/50 bg-emerald-950/80 px-4 py-1.5 text-xs font-medium text-emerald-200/90 shadow-[0_0_24px_rgba(52,211,153,0.35)] backdrop-blur-md">
+                  {worldUpdatedNotice}
+                </div>
               </div>
             )}
             {rippleConsequenceCardOpen && worldChangeCardModel && (
